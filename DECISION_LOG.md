@@ -62,6 +62,7 @@ Conventions:
 2. At the user's request, prepared the move to the H100 server: requirement files, a copy script and a path-rewrite script in `transfer/` (D21).
 3. At the user's request, added LoRA inside the audio encoder: all layers, top-K or any layer set (D20). Job 150441 failed on a test-script flag (B19); job 150442 passed for both trainers.
 4. The user asked what a partner company would need to run the model on-prem. Checking vLLM showed it can't serve LoRA for Qwen3-Omni (B20). Wrote `DEPLOYMENT.md` and corrected the docs that assumed it could (D22).
+5. Put the project under git (`README.md`, `.gitignore`; first push by the user). Added ms-swift as a submodule pinned at `8ec0455` (D23).
 
 ---
 
@@ -290,6 +291,20 @@ Conventions:
   - hand-off package template;
   - licence review.
 
+### D23. ms-swift as a pinned git submodule, upgraded on purpose (2026-09-29, user question)
+- **Question:** vendor ms-swift into the repo, or keep it separate and follow upstream fixes?
+- **Decision:** a git submodule `third_party/ms-swift` → `https://github.com/modelscope/ms-swift.git`, pinned at `8ec045582` (upstream `main`, 2026-09-23). This is the commit installed in `swift_megatron_cu128.sif`.
+- **Why pin:** `train_omni.py` subclasses ms-swift internals, and several of our fixes depend on this version's exact behaviour:
+  - internals used: `SwiftSft._prepare_dataset`, `TrainerFactory.get_trainer_cls`, `MegatronSft`, `MegatronTrainer._prepare_dataloader` / `save_checkpoint`, `args.init_iters`;
+  - version-specific fixes: D16, D17, B17, B18.
+  An unpinned upgrade could quietly break resume or data order.
+- **Why not copy it in:** +120 MB of someone else's code, no history, and pulling upstream fixes becomes a manual diff.
+- **Upgrade rule:**
+  - branch → move the pin → rebuild the container → re-run the audio-LoRA smoke test and the resume tests → merge;
+  - the pin and the container image must always match.
+- **Setup:** cloned from the local checkout (`toolkits/ms-swift`, clean, same commit), so nothing was downloaded, then pointed at GitHub. `git submodule absorbgitdirs` moved its `.git` into `.git/modules`.
+- **Not changed yet:** `container/build_container.sh` (outside the repo) still builds from `toolkits/ms-swift`. Both are at the same commit.
+
 ---
 
 ## 4. Problems found and fixed
@@ -363,6 +378,7 @@ Conventions:
 7. ASPIRE2A+: profile files (`profiles/h100_a2ap.env`), PBS job headers.
 8. Test `swift export --merge_lora` on an HF and a Megatron adapter (with audio-encoder LoRA) and serve the result in vLLM; compare with PEFT outputs (`DEPLOYMENT.md` §7).
 9. Licence review of the final data mix before any commercial hand-off (`DEPLOYMENT.md` §6).
+10. Point `container/build_container.sh` at `third_party/ms-swift`, so the image is always built from the pinned submodule (D23).
 
 **Open decisions:**
 - target text convention (speaker tags, `#entity#` hashtags, also in SDS targets);
@@ -392,6 +408,8 @@ Conventions:
   - `slurm/train_4gpu_both.sbatch`, `slurm/smoke_audio_lora_2gpu.sbatch`;
   - `transfer/`: `TRANSFER_TO_H100.md`, `copy_to_h100.sh`, `relocate_paths.sh`, `requirements.txt`, `requirements_pydeps.txt`, `requirements_container_freeze.txt`;
   - docs: `PIPELINE_PLAN.md` §10.6–10.8, `FINETUNING_GUIDE.md` §5.1, `WORKLOG.md` 2026-09-29.
+  - git repo (`git@github.com:HardikSailor/qwen3_omni_speechllm.git`): `README.md`, `.gitignore`; submodule `third_party/ms-swift` @ 8ec0455 (D23);
+  - `DEPLOYMENT.md` (D22).
 
 **Outside `qwen3_omni_speechllm/`:**
 - `toolkits/pydeps/`: mosaicml-streaming 0.13.0 + zstd, python-snappy, cramjam, catalogue (`--no-deps`).

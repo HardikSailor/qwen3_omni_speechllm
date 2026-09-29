@@ -574,3 +574,12 @@ python train_omni.py megatron ... --audio_lora_layers all --target_modules linea
   - multi-LoRA serving for the two-track plan is not available.
 - **Corrected in this file:** §2 diagram, §3.3, §4, §5, §10.5, §10.7.
 - **Rule for training:** changes must stay at the weight level (LoRA → merge, or full fine-tuning), so the architecture matches the public model (`DEPLOYMENT.md` §5).
+
+### 10.10 Version control (2026-09-29)
+
+- **Repository:** `git@github.com:HardikSailor/qwen3_omni_speechllm.git`.
+  - `.gitignore` excludes `outputs/`, logs, checkpoints and weights, generated `data/`, audio, and caches.
+  - The first commit is about 100 files, ~830 KB.
+- **ms-swift:** git submodule `third_party/ms-swift`, pinned at `8ec045582` = the commit in the container (D23).
+  - Clone with `--recursive`.
+  - Upgrades go through a branch, a container rebuild and the smoke tests.

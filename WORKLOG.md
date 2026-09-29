@@ -127,3 +127,10 @@
   - licences: review the data mix before a commercial hand-off.
 - **Corrected docs** that assumed "vLLM loads adapters": `PIPELINE_PLAN.md` (§10.9 added), `FINETUNING_GUIDE.md`, `DECISION_LOG.md` (D22, B20).
 - **Next:** test `swift export --merge_lora` on HF and Megatron adapters (with audio-encoder LoRA), then serve the result in vLLM and compare with PEFT outputs.
+
+**Git**
+- Project under git: `README.md`, `.gitignore`, first push to `git@github.com:HardikSailor/qwen3_omni_speechllm.git` (done by the user).
+- ms-swift added as a submodule, `third_party/ms-swift` @ `8ec0455`, the same commit as in the container.
+  - Cloned from the local checkout, so nothing was downloaded.
+  - Upgrade rule: branch → rebuild the container → smoke tests → merge (D23).
+- **To do:** point `container/build_container.sh` at the submodule.

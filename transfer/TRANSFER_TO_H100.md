@@ -25,6 +25,15 @@ Data: the old MERaLiON trainer on ASPIRE2A+ read MDS data from `/data/projects/1
 
 ## 2. Copy
 
+**Code via git:** instead of the `code` part below, you can clone on the H100 side. That gives the repo and ms-swift at the pinned commit (`third_party/ms-swift`):
+```bash
+git clone --recursive git@github.com:HardikSailor/qwen3_omni_speechllm.git <root>/toolkits/qwen3_omni_speechllm
+```
+You still need to copy:
+- `toolkits/pydeps`: not in git; it's 14 MB of installed packages. Or recreate it with `requirements_pydeps.txt`.
+- the container, the model and the data.
+
+
 From an Orion login node (rsync over ssh, resumable, dry run by default):
 
 ```bash

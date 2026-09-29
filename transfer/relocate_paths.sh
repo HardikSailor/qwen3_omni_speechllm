@@ -16,7 +16,7 @@ OLD_DATA=/scratch/prj0000000234/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.
 
 FILES=$(grep -rlE "$OLD_ROOT|$OLD_DATA|/scratch,/tmp" "$NEW_ROOT/toolkits/qwen3_omni_speechllm" "$NEW_ROOT/container" \
         --include='*.py' --include='*.sh' --include='*.sbatch' --include='*.yaml' \
-        --exclude-dir=transfer --exclude-dir=env_backup || true)
+        --exclude-dir=transfer --exclude-dir=env_backup --exclude-dir=third_party || true)
 for f in $FILES; do
     [ -f "$f.orig" ] || cp -p "$f" "$f.orig"
     sed -i -e "s#$OLD_DATA#$NEW_DATA#g" -e "s#$OLD_ROOT#$NEW_ROOT#g" "$f"
@@ -28,4 +28,4 @@ grep -n '^BINDS=' "$NEW_ROOT/container/run_container.sh"
 
 echo; echo "Remaining references to /scratch (should only be docs or legacy scripts):"
 grep -rn "/scratch/" "$NEW_ROOT/toolkits/qwen3_omni_speechllm" "$NEW_ROOT/container" \
-     --include='*.py' --include='*.sh' --include='*.sbatch' --include='*.yaml' --exclude-dir=transfer --exclude-dir=env_backup || echo "  none"
+     --include='*.py' --include='*.sh' --include='*.sbatch' --include='*.yaml' --exclude-dir=transfer --exclude-dir=env_backup --exclude-dir=third_party || echo "  none"

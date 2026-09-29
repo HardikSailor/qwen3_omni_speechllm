@@ -55,6 +55,13 @@ Everything else is ordinary ms-swift arguments: model loading, LoRA, template, c
 
 ## Quick start
 
+**Get the code.** ms-swift is a git submodule pinned to the exact commit in the container:
+```bash
+git clone --recursive git@github.com:HardikSailor/qwen3_omni_speechllm.git
+# already cloned without --recursive:
+git submodule update --init
+```
+
 Everything runs inside one Apptainer image. You don't need a conda env or venv.
 
 ```bash
@@ -141,6 +148,7 @@ tests/                        CPU tests and run summarisers
 tools/vendored/               old MDS conversion and sampling scripts (reference)
 transfer/                     copy and relocate kit for another cluster, requirement files
 docs/                         upstream bug report draft (Megatron optimizer resume)
+third_party/ms-swift/         git submodule: ms-swift @ 8ec0455 (the version inside the container; reference + rebuilds)
 env_backup/                   package lists of the earlier conda/venv setups (reference)
 *.md                          plan, decisions, deployment, research guide, work log
 infer_*.py, make_swift_asr_data.py, train_lora_asr_smoke.sh, run_env_check.sh   early (09-24) inference and LoRA checks
@@ -152,7 +160,7 @@ Outside this directory, on Orion:
 |---|---|
 | `../../container/` | `swift_megatron_cu128.sif` (the runtime), `run_container.sh`, build recipe, `README.md` |
 | `../pydeps/` | mosaicml-streaming 0.13 and codecs, installed `--no-deps` (not in the image) |
-| `../ms-swift/` | ms-swift source @ `8ec0455`, the version installed in the image |
+| `../ms-swift/` | Older standalone ms-swift checkout, same commit. `container/build_container.sh` still builds from it; `third_party/ms-swift` is the tracked copy |
 | `../../hf_models/` | model weights (HF cache) |
 
 ## Tests
@@ -202,7 +210,7 @@ H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 8
 | File | Read it for |
 |---|---|
 | `PIPELINE_PLAN.md` | Design, code provenance, parallelism, H100 portability, **progress and results (§10)** |
-| `DECISION_LOG.md` | Why things are the way they are (D1–D22), bugs found (B1–B20), evidence per job |
+| `DECISION_LOG.md` | Why things are the way they are (D1–D23), bugs found (B1–B20), evidence per job |
 | `DEPLOYMENT.md` | Serving, eval backends, partner on-prem hand-off, training rules for deployability |
 | `FINETUNING_GUIDE.md` | Research plan: stages, SEA data, architecture ideas, RL, evaluation |
 | `MDS_DATA_PIPELINE.md` | How the MDS data reaches ms-swift; streaming vs. map-style |
@@ -221,5 +229,10 @@ H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 8
 - **LoRA targets:** use explicit module lists. Regex targets like `q_proj|k_proj` also match the audio encoder (B1). After training, check the adapter with `summarize_smoke.py`.
 - **Disk:** `/scratch` is nearly full. Never merge LoRA per checkpoint. Save optimizer state only when a run must be resumable (`PIPELINE_PLAN.md` §10.5).
 - **Pinned versions:**
-  - ms-swift is pinned at `8ec0455`, and `train_omni.py` depends on its internals.
-  - Upgrade on a branch: rebuild the container, then re-run the smoke tests before merging.
+  - ms-swift is the submodule `third_party/ms-swift`, pinned at `8ec0455`, and `train_omni.py` depends on its internals (D23).
+  - The code that actually runs is the copy installed in the container. The submodule records which version that is.
+- **Upgrading ms-swift:**
+  1. On a branch, move the pin: `git -C third_party/ms-swift fetch && git -C third_party/ms-swift checkout <commit>`.
+  2. Rebuild the container from that source.
+  3. Re-run `slurm/smoke_audio_lora_2gpu.sbatch` and the resume tests.
+  4. If they pass, commit the new pin together with the new image. Never commit a pin the container doesn't match.
