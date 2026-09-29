@@ -1,0 +1,131 @@
+# ST-only pilot mix for testing the Qwen3-Omni data pipeline (PIPELINE_PLAN.md §6, phases 1–4).
+# Written 2026-09-28. Datasets = every ST set in the old MERaLiON mix
+# (multimodal_trainer/config/dataset/meralion2_ctm_2611_with_new_data_with_sampling_v4.3.yaml), all readable.
+#
+# `choose` values are pilot sizes (~610k samples/epoch), not a tuned recipe. The old v4.3 mix used every sample.
+# The MDS `language` column is empty for all ST rows, so src_lang/tgt_lang are set here explicitly.
+# Sample counts are from each dataset's top-level index.json (it covers all 16 sub-folders).
+# Notes from inspecting the data (2026-09-28):
+#   - all audio is OGG/Opus 16 kHz; CoVoST2 clips ~2–6 s, GigaSpeech ~4–10 s, People's Speech ~15 s;
+#   - CoVoST2 rows carry the source transcript in context_text (never fed to the model, see sea_text.py);
+#   - CoVoST2 uses one fixed instruction per direction ("Please translate the given speech to English");
+#     GigaSpeech and People's Speech vary the instruction wording;
+#   - CoVoST2 ta->en targets are often lower-case, unpunctuated and loose ("name of tamil is moon lovely");
+#   - People's Speech en->ms targets look machine-translated, with numbers spelled out ("dua ribu lapan belas").
+
+dataset_basedir: /scratch/prj0000000234/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal
+
+train:
+  # en -> X
+  - name: ST_gigaspeech_en_zh_30_ST          # 5.38 M samples, 107 GB
+    path: train/ST/gigaspeech_en_zh_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: zh
+    choose: 200000
+    weight: 0.0053475935828877
+
+  - name: ST_peoples_speech_en_ms_30_ST      # 1.50 M samples, 73 GB
+    path: train/ST/peoples_speech_en_ms_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: ms
+    choose: 100000
+    weight: 0.0053475935828877
+
+  - name: ST_CoVoST2_en_id_30_ST             # 233 k samples
+    path: train/ST/CoVoST2_en_id_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: id
+    choose: 100000
+    weight: 0.0053475935828877
+
+  - name: ST_CoVoST2_en_zh-CN_30_ST          # 233 k samples
+    path: train/ST/CoVoST2_en_zh-CN_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: zh
+    choose: 100000
+    weight: 0.0053475935828877
+
+  - name: ST_CoVoST2_en_ta_30_ST             # 233 k samples
+    path: train/ST/CoVoST2_en_ta_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: ta
+    choose: 100000
+    weight: 0.0053475935828877
+
+  # X -> en (small; use all)
+  - name: ST_CoVoST2_zh-CN_en_30_ST          # 7.1 k samples
+    path: train/ST/CoVoST2_zh-CN_en_30_ST
+    task: ST
+    src_lang: zh
+    tgt_lang: en
+    weight: 0.0053475935828877
+
+  - name: ST_CoVoST2_id_en_30_ST             # 1.2 k samples
+    path: train/ST/CoVoST2_id_en_30_ST
+    task: ST
+    src_lang: id
+    tgt_lang: en
+    weight: 0.0053475935828877
+
+  - name: ST_CoVoST2_ta_en_30_ST             # 1.3 k samples
+    path: train/ST/CoVoST2_ta_en_30_ST
+    task: ST
+    src_lang: ta
+    tgt_lang: en
+    weight: 0.0053475935828877
+
+# NOTE: these are the CoVoST2 *test* splits (the old mix used them as validation too). Don't report them as
+# held-out test results for anything tuned on them. No validation sets exist for GigaSpeech / People's Speech ST.
+validation:
+  - name: ST_CoVoST2_en_id_30_ST             # 15.5 k samples
+    path: test/ST/CoVoST2_en_id_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: id
+    choose: 512
+    weight: 0.006666666666666667
+
+  - name: ST_CoVoST2_en_zh-CN_30_ST          # 15.5 k samples
+    path: test/ST/CoVoST2_en_zh-CN_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: zh
+    choose: 512
+    weight: 0.006666666666666667
+
+  - name: ST_CoVoST2_en_ta_30_ST             # 15.5 k samples
+    path: test/ST/CoVoST2_en_ta_30_ST
+    task: ST
+    src_lang: en
+    tgt_lang: ta
+    choose: 512
+    weight: 0.006666666666666667
+
+  - name: ST_CoVoST2_zh-CN_en_30_ST          # 4.9 k samples
+    path: test/ST/CoVoST2_zh-CN_en_30_ST
+    task: ST
+    src_lang: zh
+    tgt_lang: en
+    choose: 512
+    weight: 0.006666666666666667
+
+  - name: ST_CoVoST2_id_en_30_ST             # 844 samples
+    path: test/ST/CoVoST2_id_en_30_ST
+    task: ST
+    src_lang: id
+    tgt_lang: en
+    choose: 512
+    weight: 0.006666666666666667
+
+  - name: ST_CoVoST2_ta_en_30_ST             # 754 samples
+    path: test/ST/CoVoST2_ta_en_30_ST
+    task: ST
+    src_lang: ta
+    tgt_lang: en
+    choose: 512
+    weight: 0.006666666666666667

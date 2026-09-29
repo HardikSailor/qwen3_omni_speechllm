@@ -1,0 +1,62 @@
+# ---- Training / eval outputs (checkpoints, adapters, logs, summaries: GBs) ----
+outputs/
+checkpoint-*/
+last-checkpoint
+iter_*/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.distcp
+ids_*/
+
+# ---- Logs ----
+logs/
+*.log
+slurm-*.out
+nohup.out
+
+# ---- Generated data and media (regenerate with make_swift_asr_data.py; audio lives outside the repo) ----
+data/
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.opus
+*.mds
+*.zstd
+*.tar
+*.tar.gz
+*.sif
+*.sqsh
+
+# ---- Model weights / caches (live in hf_models/ and container/cache/, outside the repo) ----
+hf_models/
+hf_cache/
+.cache/
+omni_mds_cache/
+nltk_data/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# ---- Backups written by transfer/relocate_paths.sh and adapter-config fixes ----
+*.orig
+*.part
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

@@ -1,0 +1,12 @@
+# Pure-Python extras that are NOT in the container. They live in toolkits/pydeps and are put on PYTHONPATH by the job scripts.
+# Easiest: copy toolkits/pydeps as-is (14 MB). To recreate it on the new cluster, run INSIDE the container:
+#
+#   bash container/run_container.sh pip install --no-deps --target <root>/toolkits/pydeps -r transfer/requirements_pydeps.txt
+#
+# --no-deps is required: mosaicml-streaming declares transformers<5, torchvision and cloud SDKs, which would
+# replace the container's transformers 5.2 / numpy 1.26.4 (DECISION_LOG.md B11).
+mosaicml-streaming==0.13.0
+zstd==1.5.7.2
+python-snappy==0.7.3
+cramjam==2.12.1
+catalogue==2.0.10

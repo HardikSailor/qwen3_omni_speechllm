@@ -1,0 +1,336 @@
+{
+    "ST": {
+        "CoVoST2_id_en_ST_v2": {
+            "num_samp": 1243
+        },
+        "gigaspeech_en_zh_ST_v2": {
+            "num_samp": 5382341
+        },
+        "CoVoST2_ta_en_ST_v2": {
+            "num_samp": 1310
+        },
+        "peoples_speech_en_ms_ST_v2": {
+            "num_samp": 1501271
+        },
+        "CoVoST2_en_id_ST_v2": {
+            "num_samp": 232957
+        },
+        "CoVoST2_en_ta_ST_v2": {
+            "num_samp": 232956
+        },
+        "common_voice_17_en_zh_ST_v2": {
+            "num_samp": 1101170
+        },
+        "peoples_speech_en_zh_ST_v2": {
+            "num_samp": 1501270
+        },
+        "CoVoST2_zh-CN_en_ST_v2": {
+            "num_samp": 7079
+        },
+        "CoVoST2_en_zh-CN_ST_v2": {
+            "num_samp": 232957
+        },
+        "gigaspeech_en_ms_ST_v2": {
+            "num_samp": 5382341
+        },
+        "common_voice_17_en_ms_ST_v2": {
+            "num_samp": 1101170
+        }
+    },
+    "ASR": {
+        "IMDA_PART3_60_ASR_v2": {
+            "num_samp": 60182
+        },
+        "IMDA_PART4_120_ASR_v2": {
+            "num_samp": 29155
+        },
+        "IMDA_PART5_60_ASR_v2": {
+            "num_samp": 61127
+        },
+        "IMDA_PART6_120_ASR_v2": {
+            "num_samp": 29723
+        },
+        "peoples_speech_ASR_v2": {
+            "num_samp": 1501271
+        },
+        "IMDA_PART3_30_ASR_v2": {
+            "num_samp": 122754
+        },
+        "IMDA_PART6_60_ASR_v2": {
+            "num_samp": 65765
+        },
+        "gigaspeech_ASR_v2": {
+            "num_samp": 8282987
+        },
+        "IMDA_PART4_60_ASR_v2": {
+            "num_samp": 60182
+        },
+        "IMDA_PART3_120_ASR_v2": {
+            "num_samp": 29729
+        },
+        "librispeech_clean_360_ASR_v2": {
+            "num_samp": 104014
+        },
+        "IMDA_PART4_30_ASR_v2": {
+            "num_samp": 122340
+        },
+        "librispeech_clean_500_ASR_v2": {
+            "num_samp": 148688
+        },
+        "IMDA_PART2_ASR_v2": {
+            "num_samp": 2473967
+        },
+        "common_voice_17_en_ASR_v2": {
+            "num_samp": 1101170
+        },
+        "IMDA_PART1_ASR_v2": {
+            "num_samp": 2264026
+        },
+        "IMDA_PART5_30_ASR_v2": {
+            "num_samp": 130042
+        },
+        "IMDA_PART5_120_ASR_v2": {
+            "num_samp": 28899
+        },
+        "AIShell_zh_ASR_v2": {
+            "num_samp": 120098
+        },
+        "librispeech_clean_100_ASR_v2": {
+            "num_samp": 28539
+        },
+        "IMDA_PART6_30_ASR_v2": {
+            "num_samp": 140367
+        }
+    },
+    "DS": {
+        "IMDA_PART5_30_DS_v2": {
+            "num_samp": 130001
+        },
+        "IMDA_PART3_30_DS_v2": {
+            "num_samp": 122731
+        },
+        "IMDA_PART3_60_DS_v2": {
+            "num_samp": 60130
+        },
+        "IMDA_PART4_30_DS_v2": {
+            "num_samp": 122317
+        },
+        "IMDA_PART5_120_DS_v2": {
+            "num_samp": 28734
+        },
+        "IMDA_PART6_60_DS_v2": {
+            "num_samp": 65629
+        },
+        "IMDA_PART4_120_DS_v2": {
+            "num_samp": 29002
+        },
+        "IMDA_PART6_30_DS_v2": {
+            "num_samp": 140283
+        },
+        "IMDA_PART5_60_DS_v2": {
+            "num_samp": 61075
+        },
+        "IMDA_PART6_120_DS_v2": {
+            "num_samp": 29360
+        },
+        "IMDA_PART4_60_DS_v2": {
+            "num_samp": 60132
+        },
+        "IMDA_PART3_120_DS_v2": {
+            "num_samp": 29590
+        }
+    },
+    "Paralingual": {
+        "MELD_SR_v2": {
+            "num_samp": 9988
+        },
+        "IMDA_PART4_60_GR_v2": {
+            "num_samp": 267760
+        },
+        "IMDA_PART4_120_NR_v2": {
+            "num_samp": 120778
+        },
+        "IMDA_PART5_60_GR_v2": {
+            "num_samp": 271726
+        },
+        "IMDA_PART3_120_MIX_v2": {
+            "num_samp": 140040
+        },
+        "IMDA_PART4_30_NR_v2": {
+            "num_samp": 506589
+        },
+        "IMDA_PART4_60_MIX_v2": {
+            "num_samp": 286922
+        },
+        "VoxCeleb1_GR_v2": {
+            "num_samp": 148642
+        },
+        "VoxCeleb1_NR_v2": {
+            "num_samp": 148642
+        },
+        "iemocap_ER_v2": {
+            "num_samp": 9011
+        },
+        "MELD_ER_v2": {
+            "num_samp": 9988
+        },
+        "IMDA_PART3_60_GR_v2": {
+            "num_samp": 263867
+        },
+        "IMDA_PART5_120_NR_v2": {
+            "num_samp": 120018
+        },
+        "IMDA_PART4_60_NR_v2": {
+            "num_samp": 249226
+        },
+        "IMDA_PART5_60_NR_v2": {
+            "num_samp": 253393
+        },
+        "IMDA_PART3_30_NR_v2": {
+            "num_samp": 500354
+        },
+        "IMDA_PART3_60_MIX_v2": {
+            "num_samp": 283691
+        },
+        "IMDA_PART4_120_GR_v2": {
+            "num_samp": 129819
+        },
+        "IMDA_PART4_30_GR_v2": {
+            "num_samp": 544012
+        },
+        "IMDA_PART3_60_NR_v2": {
+            "num_samp": 245011
+        },
+        "IMDA_PART4_120_MIX_v2": {
+            "num_samp": 139187
+        },
+        "IMDA_PART5_120_MIX_v2": {
+            "num_samp": 138383
+        },
+        "IMDA_PART5_120_GR_v2": {
+            "num_samp": 128631
+        },
+        "IMDA_PART3_120_GR_v2": {
+            "num_samp": 130248
+        },
+        "IMDA_PART3_30_MIX_v2": {
+            "num_samp": 578538
+        },
+        "IMDA_PART5_30_MIX_v2": {
+            "num_samp": 624240
+        },
+        "iemocap_GR_v2": {
+            "num_samp": 9011
+        },
+        "IMDA_PART3_30_GR_v2": {
+            "num_samp": 538042
+        },
+        "IMDA_PART3_120_NR_v2": {
+            "num_samp": 121123
+        },
+        "IMDA_PART5_60_MIX_v2": {
+            "num_samp": 292985
+        },
+        "IMDA_PART5_30_GR_v2": {
+            "num_samp": 577226
+        },
+        "IMDA_PART4_30_MIX_v2": {
+            "num_samp": 584749
+        },
+        "IMDA_PART5_30_NR_v2": {
+            "num_samp": 538924
+        }
+    },
+    "ASQA": {
+        "clotho_ASQA_v2": {
+            "num_samp": 5171
+        },
+        "AudioCaps_ASQA_v2": {
+            "num_samp": 44465
+        },
+        "WavCaps_ASQA_v2": {
+            "num_samp": 265126
+        }
+    },
+    "AC": {
+        "AudioCaps_AC_v2": {
+            "num_samp": 45075
+        },
+        "WavCaps_AC_v2": {
+            "num_samp": 272200
+        }
+    },
+    "SI": {
+        "alpaca-gpt4-audio_SI_v2": {
+            "num_samp": 29323
+        },
+        "openhermes-audio_SI_v2": {
+            "num_samp": 238717
+        }
+    },
+    "SQA": {
+        "IMDA_PART3_60_SQA_v2": {
+            "num_samp": 60033
+        },
+        "IMDA_PART4_30_SQA_v2": {
+            "num_samp": 122091
+        },
+        "IMDA_PART3_30_SQA_v2": {
+            "num_samp": 122484
+        },
+        "IMDA_PART4_120_SQA_v2": {
+            "num_samp": 29009
+        },
+        "IMDA_PART6_30_SQA_v2": {
+            "num_samp": 140140
+        },
+        "gigaspeech_SQA_v2": {
+            "num_samp": 5299225
+        },
+        "IMDA_PART6_60_SQA_v2": {
+            "num_samp": 65645
+        },
+        "dream_SQA_v2": {
+            "num_samp": 5769
+        },
+        "Spoken-SQuAD_SQA_v2": {
+            "num_samp": 37109
+        },
+        "SLUE_Phase_2_SQA_v2": {
+            "num_samp": 46186
+        },
+        "peoples_speech_SQA_v2": {
+            "num_samp": 1466029
+        },
+        "librispeech_clean_100_SQA_v2": {
+            "num_samp": 28469
+        },
+        "IMDA_PART4_60_SQA_v2": {
+            "num_samp": 60031
+        },
+        "IMDA_PART5_30_SQA_v2": {
+            "num_samp": 129816
+        },
+        "IMDA_PART3_120_SQA_v2": {
+            "num_samp": 29621
+        },
+        "IMDA_PART6_120_SQA_v2": {
+            "num_samp": 29638
+        },
+        "IMDA_PART5_120_SQA_v2": {
+            "num_samp": 28764
+        },
+        "common_voice_17_en_SQA_v2": {
+            "num_samp": 788594
+        },
+        "librispeech_other_500_SQA_v2": {
+            "num_samp": 147979
+        },
+        "librispeech_clean_360_SQA_v2": {
+            "num_samp": 103659
+        },
+        "IMDA_PART5_60_SQA_v2": {
+            "num_samp": 60982
+        }
+    }
+}
