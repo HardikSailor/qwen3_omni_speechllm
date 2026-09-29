@@ -62,7 +62,11 @@ git clone --recursive git@github.com:HardikSailor/qwen3_omni_speechllm.git
 git submodule update --init
 ```
 
-Everything runs inside one Apptainer image. You don't need a conda env or venv.
+Everything runs inside one container image. You don't need a conda env or venv.
+- **Apptainer:** `swift_megatron_cu128.sif`.
+- **enroot:** `swift_megatron_cu128.sqsh`, converted from the `.sif` with `container/sif_to_enroot.sh`.
+
+`run_container.sh` picks whichever runtime is installed.
 
 ```bash
 P=/scratch/prj0000000234/sailorhb/toolkits/qwen3_omni_speechllm
@@ -158,7 +162,7 @@ Outside this directory, on Orion:
 
 | Path | What |
 |---|---|
-| `../../container/` | `swift_megatron_cu128.sif` (the runtime), `run_container.sh`, build recipe, `README.md` |
+| `../../container/` | `swift_megatron_cu128.sif` (Apptainer) and `.sqsh` (enroot); `run_container.sh` (picks the runtime), `run_container_enroot.sh`, `sif_to_enroot.sh`, build recipe, `README.md` |
 | `../pydeps/` | mosaicml-streaming 0.13 and codecs, installed `--no-deps` (not in the image) |
 | `../ms-swift/` | Older standalone ms-swift checkout, same commit. `container/build_container.sh` still builds from it; `third_party/ms-swift` is the tracked copy |
 | `../../hf_models/` | model weights (HF cache) |
@@ -210,7 +214,7 @@ H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 8
 | File | Read it for |
 |---|---|
 | `PIPELINE_PLAN.md` | Design, code provenance, parallelism, H100 portability, **progress and results (§10)** |
-| `DECISION_LOG.md` | Why things are the way they are (D1–D23), bugs found (B1–B20), evidence per job |
+| `DECISION_LOG.md` | Why things are the way they are (D1–D24), bugs found (B1–B21), evidence per job |
 | `DEPLOYMENT.md` | Serving, eval backends, partner on-prem hand-off, training rules for deployability |
 | `FINETUNING_GUIDE.md` | Research plan: stages, SEA data, architecture ideas, RL, evaluation |
 | `MDS_DATA_PIPELINE.md` | How the MDS data reaches ms-swift; streaming vs. map-style |
@@ -221,7 +225,7 @@ H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 8
 
 ## Gotchas
 
-- **Always launch through `run_container.sh`.** It isolates the container from `~/.local`, sets `HF_HOME`, offline mode and `NLTK_DATA`, and forwards the variables training needs.
+- **Always launch through `run_container.sh`.** It isolates the container from `~/.local`, sets `HF_HOME`, offline mode and `NLTK_DATA`, and forwards the variables training needs. It works with Apptainer or enroot (`CONTAINER_RUNTIME` forces one).
 - **Megatron:**
   - `NPROC_PER_NODE` must be set, even to 1.
   - TP, PP and CP must stay 1, because the mosaic reader partitions by global rank. EP is fine.

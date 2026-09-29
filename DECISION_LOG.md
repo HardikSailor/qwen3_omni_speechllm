@@ -63,6 +63,7 @@ Conventions:
 3. At the user's request, added LoRA inside the audio encoder: all layers, top-K or any layer set (D20). Job 150441 failed on a test-script flag (B19); job 150442 passed for both trainers.
 4. The user asked what a partner company would need to run the model on-prem. Checking vLLM showed it can't serve LoRA for Qwen3-Omni (B20). Wrote `DEPLOYMENT.md` and corrected the docs that assumed it could (D22).
 5. Put the project under git (`README.md`, `.gitignore`; first push by the user). Added ms-swift as a submodule pinned at `8ec0455` (D23).
+6. The user said the new server has enroot, not Apptainer. Converted the image to enroot and added a launcher that is picked automatically; tested end to end (D24).
 
 ---
 
@@ -214,7 +215,7 @@ Conventions:
 - Megatron's `args.init_iters()` treats `len(train_dataset)` as the global sample count, but mosaic's `len` is per rank.
 - `train_iters` and `eval_iters` would have been DP× too small on multi-GPU runs, and a 1-GPU test cannot show this. It was found by reading the code, before any multi-GPU run.
 - **Fix:** a `_GlobalLen` wrapper reporting mosaic's `epoch_size`.
-- **Evidence:** job 149697 set `eval_iters` = 48 = 192 / 4. Job 149729 should show 6 = 192 / 32 on 8 GPUs.
+- **Evidence:** job 149697 set `eval_iters` = 48 = 192 / 4 on 1 GPU; jobs 150431 (DP=4) and 149729 (DP=8) set 6 = 192 / 32.
 
 ### D17. Megatron optimizer resume: root cause in ms-swift; fix = `--no_save_optim false` when resuming (2026-09-28; "fix it first" was the user's call)
 - **Symptoms:**
@@ -305,6 +306,23 @@ Conventions:
 - **Setup:** cloned from the local checkout (`toolkits/ms-swift`, clean, same commit), so nothing was downloaded, then pointed at GitHub. `git submodule absorbgitdirs` moved its `.git` into `.git/modules`.
 - **Not changed yet:** `container/build_container.sh` (outside the repo) still builds from `toolkits/ms-swift`. Both are at the same commit.
 
+### D24. enroot image converted from the SIF, same launcher interface (2026-09-29, user: no Apptainer on the new server)
+- **Decision:** no rebuild. `container/sif_to_enroot.sh` reuses the SIF's root filesystem and adds `/etc/environment` (the image's Env, from the SIF's JSON config) and `/etc/rc`. The result is `swift_megatron_cu128.sqsh` (12.6 GB, ~1 min to make).
+- **Same image, same results:** identical packages mean the Apptainer test results carry over. This was checked, not assumed (job 150477).
+- **Launcher:**
+  - `run_container.sh` dispatches to `run_container_enroot.sh` when `apptainer` is missing (`CONTAINER_RUNTIME` to force);
+  - explicit environment, as with `--cleanenv`;
+  - the image is unpacked once per node on local disk;
+  - host `/tmp` is bound. enroot's default is a RAM tmpfs on `/tmp`, which would put the 600 GB mosaic cache in memory.
+- **Transfer:**
+  - `copy_to_h100.sh` takes `IMAGE=sif|sqsh|both`;
+  - `relocate_paths.sh` rewrites the bind paths in both launchers.
+- **Evidence (job 150477):**
+  - 2× H200 visible; the Transformer Engine layer ran on the GPU;
+  - `/tmp` on xfs;
+  - the audio-LoRA smoke test passed on both trainers, same as under Apptainer: loss 1.030 → 0.723 (HF) / 1.033 → 0.721 (Megatron); memory 61.8 / 34.4 GiB; 24/24 encoder `lora_B` trained.
+- **First attempt:** job 150476 failed in the converter. The SIF keeps its config at the top level of the JSON, not under `config` (B21).
+
 ---
 
 ## 4. Problems found and fixed
@@ -330,6 +348,7 @@ Conventions:
 | B17 | Saved `adapter_config.json` → `target_modules` matches more modules than were trained. Megatron writes bare names (`q_proj`, `fc1`). swift sft shortens the list (`28.self_attn.k_proj` also matches LLM layer 28). PEFT wraps the extras in zero LoRA at load time | Audio-LoRA smoke test (job 150441) and reading mcore_bridge `gpt_bridge.py` | With encoder LoRA on, `fix_peft_target_modules` rewrites the list after every save to the exact modules in `adapter_model.safetensors` (original kept as `adapter_config.orig.json`). Megatron resume reads only r/alpha/dropout/rslora/bias from that file |
 | B18 | ms-swift keeps only the last `--target_modules` flag; with `all-linear` on a multimodal model it builds a regex and drops any extra names | Reading `swift/megatron/utils/utils.py` and the HF argument parsing | Encoder names are inserted into the one existing list; `all-*` and `--target_regex` are refused with a clear message |
 | B19 | Megatron-SWIFT refuses `--save_total_limit 1` (`must be >= 2`) | Job 150441 | Test script uses 2 |
+| B21 | `sif_to_enroot.sh` looked for `config.Env` in the SIF JSON; the SIF stores the OCI config at the top level | Job 150476 | Accepts both layouts; job 150477 passed |
 | B20 | Docs assumed vLLM serves our LoRA adapters; vLLM 0.17.1 has no LoRA support for the Qwen3-Omni thinker | `supports_lora` check in the container (09-29), prompted by the user's deployment question | Merged-model deployment and eval plan (D22, `DEPLOYMENT.md`) |
 
 ---
@@ -349,10 +368,11 @@ Conventions:
 | 09-28 | **Job 149713**, optimizer debug | Upstream confirmed; optimizer state empty on load |
 | 09-28 | **Job 149720**, fix verification | Resume with optimizer within 0.009 (default) / no NaN (fully-reshardable) |
 | 09-28 | **Job 149550**, unzip benchmark | Read 4.45 GB/s; unzip 3.3 GB/s; full mix ~9 min per node (D7, D8) |
-| 09-28 | **Job 149729**, 8-GPU both paths | *Still queued on 09-29:* HF DDP and Megatron EP=8 on `st_v0`, each with a resume test and a disjoint-partition check |
+| 09-29 | **Job 149729**, 8-GPU both paths (ran 09-29 11:47, 20 min) | Pass: resume 0.004 / 0.004 (Megatron with optimizer); 8 × 248 disjoint ids; `eval_iters` 6; memory 61.8 / 16.7 GiB; **steady 14.6 (HF DDP) vs. 13.9 (Megatron EP=8) samples/s**; 4→8 GPU scaling 1.92× / 2.0× (`PIPELINE_PLAN.md` §10.11) |
 | 09-29 | **Job 150431**, 4-GPU both paths | Pass: resume 0.004 / 0.003; partitions disjoint; `eval_iters` 6; memory 61.8 / 23.5 GiB (D19) |
 | 09-29 | **Job 150441**, audio-LoRA smoke (2 GPUs) | HF passes; Megatron stopped by `--save_total_limit 1` (B19) |
 | 09-29 | **Job 150442**, audio-LoRA smoke (2 GPUs) | Pass on both trainers: LoRA only in layers 28–31, 24/24 `lora_B` trained, exact adapter configs (D20) |
+| 09-29 | **Job 150477**, enroot image + launcher (2 GPUs) | Pass: GPUs, TE, versions, `/tmp` on disk; audio-LoRA smoke test on both trainers matches Apptainer (D24). Job 150476 failed in the converter (B21) |
 | 09-29 | `transfer/relocate_paths.sh` on a local copy | All `.py/.sh/.sbatch/.yaml` rewritten; no `/scratch/` left; `BINDS` updated (D21) |
 
 ---
@@ -369,7 +389,7 @@ Conventions:
 - the transfer kit for the H100 cluster (D21).
 
 **Next:**
-1. Job 149729: 8-GPU throughput for both paths (4-GPU correctness is already done, D19).
+1. ~~Job 149729: 8-GPU throughput~~ **done 09-29:** HF DDP 14.6 vs. Megatron EP=8 13.9 samples/s on `st_v0`; both pass all checks (`PIPELINE_PLAN.md` §10.11).
 2. Copy to the H100 cluster (`transfer/TRANSFER_TO_H100.md`) and run `container/smoke_test.sh env` there.
 3. Megatron re-run with bigger batches or packing, for a fair trainer choice (D5).
 4. Eval script: transformers + PEFT for in-training checks, merged + vLLM for final numbers (D22); the old metrics, per-task/language scores (phase 5), then a zero-shot baseline.

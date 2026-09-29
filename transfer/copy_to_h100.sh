@@ -3,6 +3,7 @@
 #
 #   DEST=user@h100-login:/path/to/root  DATA_DEST=user@h100-login:/path/to/datasets_multimodal \
 #       bash transfer/copy_to_h100.sh [code] [container] [model] [data]        # dry run: prints what would be copied
+#   IMAGE=sqsh RUN=1 DEST=... bash transfer/copy_to_h100.sh container          # enroot image instead of the .sif
 #   RUN=1 DEST=...  DATA_DEST=...  bash transfer/copy_to_h100.sh ...            # really copy
 #
 # With no part names, it copies all four. rsync is resumable: re-run the same command after an interruption.
@@ -24,10 +25,13 @@ for p in "${PARTS[@]}"; do case $p in
          --exclude outputs/ --exclude logs/ --exclude __pycache__/ --exclude '*.pyc'
     sync $SRC/toolkits/pydeps/   "$DEST/toolkits/pydeps/"
     sync $SRC/toolkits/ms-swift/ "$DEST/toolkits/ms-swift/" --exclude __pycache__/ --exclude '*.egg-info' --exclude build/ ;;
-  container)  # 12.6 GB image + 51 MB NLTK data + launcher, recipe and README
+  container)  # image (IMAGE=sif|sqsh|both, default sif; sqsh = enroot, made by container/sif_to_enroot.sh) + NLTK data + launchers
+    case ${IMAGE:-sif} in sif) IMG=(--include swift_megatron_cu128.sif) ;; sqsh) IMG=(--include swift_megatron_cu128.sqsh) ;;
+         both) IMG=(--include swift_megatron_cu128.sif --include swift_megatron_cu128.sqsh) ;; *) echo "IMAGE=sif|sqsh|both"; exit 1 ;; esac
     sync $SRC/container/ "$DEST/container/" \
-         --include run_container.sh --include build_container.sh --include smoke_test.sh --include README.md \
-         --include swift_megatron_cu128.def --include swift_megatron_cu128.sif \
+         --include run_container.sh --include run_container_enroot.sh --include sif_to_enroot.sh \
+         --include build_container.sh --include smoke_test.sh --include README.md \
+         --include swift_megatron_cu128.def "${IMG[@]}" \
          --include cache/ --include cache/nltk_data/ --include 'cache/nltk_data/**' --exclude '*' ;;
   model)      # 66 GB HF cache for Qwen3-Omni-30B-A3B-Instruct (keeps the blobs/ + snapshots/ symlink layout)
     sync $SRC/hf_models/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/ \

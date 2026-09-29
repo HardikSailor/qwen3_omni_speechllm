@@ -134,3 +134,18 @@
   - Cloned from the local checkout, so nothing was downloaded.
   - Upgrade rule: branch → rebuild the container → smoke tests → merge (D23).
 - **To do:** point `container/build_container.sh` at the submodule.
+
+**8-GPU job 149729 finished** (09-29 11:47–12:07, node 374Y574). Both paths pass (`PIPELINE_PLAN.md` §10.11):
+- resume matches: max |Δloss| 0.004 on HF and on Megatron with optimizer; data position 960 at step 30;
+- 8 ranks × 248 ids, disjoint; Megatron `eval_iters` 6 (global-length fix holds at DP=8);
+- steady throughput 14.6 samples/s HF DDP vs. 13.9 Megatron EP=8 (the gap was 17.0 vs. 13.5 on the LibriSpeech benchmark); memory 61.8 vs. 16.7 GiB;
+- 4 → 8 GPUs scales 1.92× / 2.0×, so data loading keeps up.
+
+
+**enroot (the new server has no Apptainer)**
+- `container/sif_to_enroot.sh`: `.sif` → `swift_megatron_cu128.sqsh` (12.6 GB, ~1 min). Same filesystem, plus `/etc/environment` and `/etc/rc`.
+- `container/run_container_enroot.sh`: same interface and environment as `run_container.sh`.
+  - `run_container.sh` switches to it automatically when `apptainer` is missing.
+  - It binds the host `/tmp`, because enroot's default `/tmp` is in RAM.
+- **Test, job 150477:** passed. GPUs, TE and versions OK; `/tmp` on xfs; the audio-LoRA smoke test on both trainers matches the Apptainer results. Job 150476 failed on a converter bug (B21).
+- `copy_to_h100.sh`: `IMAGE=sqsh` copies the enroot image. `relocate_paths.sh` handles both launchers.

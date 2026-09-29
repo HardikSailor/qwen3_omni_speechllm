@@ -22,9 +22,12 @@ for f in $FILES; do
     sed -i -e "s#$OLD_DATA#$NEW_DATA#g" -e "s#$OLD_ROOT#$NEW_ROOT#g" "$f"
     echo "rewrote $f"
 done
-# run_container.sh binds /scratch and /tmp into the container; /scratch may not exist on the new cluster.
-sed -i "s#^BINDS=\"/scratch,/tmp\"#BINDS=\"$NEW_ROOT,$NEW_DATA,/tmp\"#" "$NEW_ROOT/container/run_container.sh"
-grep -n '^BINDS=' "$NEW_ROOT/container/run_container.sh"
+# Both launchers (Apptainer and enroot) bind /scratch and /tmp; /scratch may not exist on the new cluster.
+for f in run_container.sh run_container_enroot.sh; do
+    [ -f "$NEW_ROOT/container/$f" ] || continue
+    sed -i "s#^BINDS=\"/scratch,/tmp\"#BINDS=\"$NEW_ROOT,$NEW_DATA,/tmp\"#" "$NEW_ROOT/container/$f"
+    grep -Hn '^BINDS=' "$NEW_ROOT/container/$f"
+done
 
 echo; echo "Remaining references to /scratch (should only be docs or legacy scripts):"
 grep -rn "/scratch/" "$NEW_ROOT/toolkits/qwen3_omni_speechllm" "$NEW_ROOT/container" \

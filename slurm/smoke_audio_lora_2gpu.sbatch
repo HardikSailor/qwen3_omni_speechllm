@@ -17,7 +17,7 @@
 #       adapter_config.json lists exact module names (fix_peft_target_modules).
 set -u
 P=/scratch/prj0000000234/sailorhb/toolkits/qwen3_omni_speechllm
-O=$P/outputs/smoke_audio_lora
+O=${OUT_DIR:-$P/outputs/smoke_audio_lora}
 RUN="bash /scratch/prj0000000234/sailorhb/container/run_container.sh"
 MODEL=$(ls -d /scratch/prj0000000234/sailorhb/hf_models/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/snapshots/* | head -1)
 export PYTHONPATH=$P:/scratch/prj0000000234/sailorhb/toolkits/pydeps

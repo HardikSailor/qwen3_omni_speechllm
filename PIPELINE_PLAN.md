@@ -583,3 +583,34 @@ python train_omni.py megatron ... --audio_lora_layers all --target_modules linea
 - **ms-swift:** git submodule `third_party/ms-swift`, pinned at `8ec045582` = the commit in the container (D23).
   - Clone with `--recursive`.
   - Upgrades go through a branch, a container rebuild and the smoke tests.
+
+### 10.11 8-GPU check (2026-09-29): both paths pass, throughput measured
+
+Job **149729** (`slurm/train_8gpu_both.sbatch`, node 374Y574, 8×H200, 20 min) finally ran. Settings as in §10.6 but on 8 GPUs: HF DDP (micro-batch 1 × 8 GPUs × grad-accum 4) and Megatron **EP=8** (micro-batch 1, global batch 32); `mixes/st_v0.yaml`; 60 steps; eval + checkpoint at 30/60. Summary: `outputs/train_8gpu/summary.txt`.
+
+| | HF DDP (`sft`) | Megatron EP=8 |
+|---|---|---|
+| Train loss, step 1 → 60 | 1.175 → 0.835 | 1.172 → 0.836 |
+| Eval loss, step 30 / 60 | 1.310 / 1.305 | 0.805 / 0.803 |
+| Peak memory per GPU | 61.8 GiB | **16.7 GiB** |
+| **Steady throughput** (steps 32–59, no eval/save in the window) | **2.19 s/step = 14.6 samples/s** | **2.30 s/step = 13.9 samples/s** |
+| Resume from step 30: max \|loss diff\| over steps 31–60 | 0.004 (step 31 identical) | 0.004 (with optimizer, `--no_save_optim false`) |
+| Data position saved at step 30 / 60 | 960 / 1920 (= 30 × 32 / 60 × 32) | 960 / 1920 |
+| Rank partitions (`check_partitions.py`) | 8 × 248 ids, disjoint, no repeats | same |
+| Adapter | 388 tensors, 0 in `audio_tower.layers` | 384 tensors, 0 in `audio_tower` |
+
+Notes:
+- **Megatron `eval_iters` = 6 = 192 / 32 on DP=8**: the global-length fix (D16) holds at 8 GPUs.
+- **Scaling 4 → 8 GPUs:** HF 7.6 → 14.6 samples/s (1.92×); Megatron EP 6.9 → 13.9 (2.0×). Near-linear, so the mosaic data path keeps up at this scale.
+- **Compared with the LibriSpeech JSONL benchmark (job 147727: 17.0 vs. 13.5 samples/s):** on the real ST mix HF is a little slower (longer clips: People's Speech ~15 s, GigaSpeech up to 10 s, vs. LibriSpeech) and the HF–Megatron gap shrank from 26% to 5%. Megatron uses a quarter of the memory, so bigger batches or packing (still to test) could put it ahead.
+- **How the numbers were computed:** `train_speed(s/it)` in the logs is a running average that includes start-up, eval and saving (HF: 7.1 at step 6, 2.8 at step 60). The steady figure is the `elapsed_time` difference between steps 32 and 59 divided by 27.
+- Each rank read 248 ids for 240 trained samples, the same small prefetch overshoot seen on 4 GPUs.
+- Outputs: 964 MB (`--merge_lora false`, `--save_total_limit 2`).
+
+
+### 10.11 enroot support (2026-09-29)
+
+The new server has enroot, not Apptainer:
+- `container/sif_to_enroot.sh` converts the image unchanged (→ `.sqsh`, 12.6 GB).
+- `run_container.sh` falls back to `run_container_enroot.sh`, so job scripts are unchanged.
+- **Job 150477:** the audio-LoRA smoke test passed on both trainers under enroot, with the same losses and memory as under Apptainer. Details: D24, `container/README.md`.

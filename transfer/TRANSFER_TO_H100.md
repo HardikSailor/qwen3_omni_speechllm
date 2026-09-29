@@ -63,6 +63,19 @@ It was tested on a local copy: no references remained.
 
 ## 4. Check the environment
 
+**No Apptainer on the new cluster (e.g. only enroot):**
+- Copy the enroot image instead of the `.sif`: `IMAGE=sqsh RUN=1 bash transfer/copy_to_h100.sh container`.
+  - If `swift_megatron_cu128.sqsh` doesn't exist yet, make it on Orion first: `bash container/sif_to_enroot.sh` on a compute node, ~1 min.
+- `run_container.sh` then uses enroot automatically, so job scripts are unchanged.
+- Check on a GPU node there: `CONTAINER_RUNTIME=enroot bash <root>/container/run_container.sh python -c "import torch; print(torch.cuda.device_count())"`.
+- The first call per node unpacks the image (~30 GB) into enroot's data path.
+- Tested on Orion's enroot 3.5 (job 150477). The other cluster's enroot configuration may differ, especially:
+  - its NVIDIA hook;
+  - `ENROOT_DATA_PATH`.
+
+  So run `slurm/smoke_audio_lora_2gpu.sbatch` there first.
+
+
 ```bash
 C=/path/to/omni_root/container
 apptainer exec $C/swift_megatron_cu128.sif python -c "import swift, megatron.core; print(swift.__version__)"   # login node, no GPU
