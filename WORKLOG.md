@@ -171,3 +171,9 @@
 1. `qsub -q dedicated pbs/train_8gpu_both.pbs`, then `pbs/train_32gpu_4node.pbs`: read the NCCL line first (`nscc/README.md`).
 2. Check the Megatron resume diff on 8 GPUs.
 3. The eval script; vLLM inference on NSCC; `swift export --merge_lora` (see `DEPLOYMENT.md` §7).
+
+**2026-09-30 (later): FSDP2 test added**
+- Question was why FSDP1/2 "don't work" with ms-swift: never tested here. ms-swift supports FSDP2 in the HF trainer (`--fsdp fsdp2`, preset `swift/config/fsdp2.json`); FSDP1 has no preset. FSDP shards parameters but not experts (91% of the thinker), hence the earlier "fallback only" call (`PIPELINE_PLAN.md` §8).
+- Added phase `F8A` (HF trainer, `--fsdp fsdp2`, 30 steps) as the last phase of `pbs/train_8gpu_both.pbs`; walltime 3.5 h. Untested: `train_omni.py`'s custom dataloaders and checkpoint saving under FSDP2. Commit `eb1768a`.
+- LoRA-only guidance: DDP (~62 GiB/GPU) is the simplest for attention / audio-projector LoRA; Megatron EP (~17 GiB/GPU) when memory or expert LoRA forces it. Both trainers are ready and tested for attention and audio-encoder LoRA; expert LoRA has no script or target list yet.
+
