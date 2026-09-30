@@ -1,7 +1,6 @@
 """CPU check of the full data path without the model: mosaic -> build_row -> ms-swift Qwen3-Omni template encode
 -> padding-free collator. Checks audio token counts (~13/s), prompt masking in labels and batch shapes.
-    apptainer exec --cleanenv -B /scratch,/tmp --env PYTHONPATH=$PWD:/scratch/prj0000000234/sailorhb/toolkits/pydeps \
-        --env HF_HOME=/scratch/prj0000000234/sailorhb/hf_models --env HF_HUB_OFFLINE=1 <sif> python tests/check_encode_cpu.py
+    source nscc/env.sh && $RUN python tests/check_encode_cpu.py      # in an interactive job
 """
 import functools, getpass, glob, io, os, shutil, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,7 +11,7 @@ from omni_mds.mosaic_stream import OmniStreamingDataset, StreamConfig, make_data
 from omni_mds.sea_text import RowConfig
 from train_omni import encode_row
 
-MODEL = glob.glob('/scratch/prj0000000234/sailorhb/hf_models/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/snapshots/*')[0]
+MODEL = glob.glob('/scratch/users/astar/ares/sailorhb/container/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/snapshots/*')[0]
 proc = get_processor(MODEL, model_type='qwen3_omni_moe')
 template = get_template(proc, max_length=2048, truncation_strategy='raise', padding_free=True)
 template.set_mode('train')

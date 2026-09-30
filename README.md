@@ -9,25 +9,25 @@ The pipeline is **stock [ms-swift](https://github.com/modelscope/ms-swift) plus 
 | HF (`swift sft`) | `train_omni.py sft` | DDP | LoRA prototyping; plain PyTorch, easy to modify |
 | Megatron-SWIFT | `train_omni.py megatron` | Expert parallel (EP) | Large runs, expert LoRA, full fine-tuning, 80 GB GPUs |
 
-**Status (2026-09-29):**
-- Both trainers pass on 1, 2 and 4 H200 GPUs: training, eval, exact resume, and disjoint per-GPU data.
-- LoRA inside the audio encoder is supported.
-- The eval script is next.
+**Status (2026-09-30), running on NSCC (H100 80 GB, PBS, enroot):**
+- Both trainers pass on 1 and 2 H100 GPUs here (train, eval, resume; audio-encoder LoRA); on 1, 2, 4 and 8 H200 GPUs on the previous cluster.
+- Scripts for 1 node x 8 GPUs and 4 nodes x 8 GPUs are ready for the dedicated queue; not yet run.
+- LoRA inside the audio encoder is supported. The eval script is next.
 
-See `WORKLOG.md` for the daily log.
+The code moved from the previous cluster (Orion, Slurm, H200) to NSCC; older docs describe Orion, with paths mapped in [Paths](#paths). See `WORKLOG.md` for the daily log.
 
 ---
 
 ## Contents
 
 - [How it works](#how-it-works)
+- [Paths](#paths)
 - [Quick start](#quick-start)
 - [Training options](#training-options)
 - [Repository layout](#repository-layout)
 - [Tests](#tests)
 - [Results so far](#results-so-far)
 - [Deployment](#deployment)
-- [Moving to another cluster](#moving-to-another-cluster)
 - [Documentation map](#documentation-map)
 - [Gotchas](#gotchas)
 
@@ -53,6 +53,27 @@ See `WORKLOG.md` for the daily log.
 
 Everything else is ordinary ms-swift arguments: model loading, LoRA, template, collator, optimizer, saving.
 
+## Paths
+
+| What | NSCC location |
+|---|---|
+| This repo | `/scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm` |
+| Container image, model, `pydeps`, caches (`CONTAINER_HOME`) | `/scratch/users/astar/ares/sailorhb/container/` (see `container/README.md`) |
+| Model weights | `$CONTAINER_HOME/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/snapshots/<hash>` |
+| MDS data | `/data/projects/13003558/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal` |
+| Outputs, logs | `outputs/` in the repo (git-ignored), `outputs/pbs_logs/` for PBS job logs |
+
+Older docs use the previous cluster's paths: `/scratch/prj0000000234/sailorhb/{toolkits,container,hf_models}` and `/scratch/prj0000000234/zoux/datasets/...`.
+Read `toolkits/qwen3_omni_speechllm` as this repo, `container` and `hf_models` as `CONTAINER_HOME`, and `zoux/datasets/...` as the `/data/projects/13003558/zoux/datasets/...` above.
+
+## What you need to run it
+
+- A GPU node: an interactive PBS job (`qsub -I -q ... -l select=1:ngpus=1:ncpus=14:mem=235GB -P 13003558`) or `qsub pbs/<job>.pbs`. Never run on the login node.
+- enroot (the only container runtime on NSCC compute nodes) and the image in `CONTAINER_HOME`. What the image contains and what was added on top: `container/README.md`.
+- The `pydeps` folder with `mosaicml-streaming` (the MDS reader, not in the image). Recreate: `container/README.md`.
+- Model weights and MDS data at the paths above; read access needs the project group `13003558`.
+- The submodule: `git clone --recursive` (reference only; the code that runs is the copy inside the image).
+
 ## Quick start
 
 **Get the code.** ms-swift is a git submodule pinned to the exact commit in the container:
@@ -62,27 +83,19 @@ git clone --recursive git@github.com:HardikSailor/qwen3_omni_speechllm.git
 git submodule update --init
 ```
 
-Everything runs inside one container image. You don't need a conda env or venv.
-- **Apptainer:** `swift_megatron_cu128.sif`.
-- **enroot:** `swift_megatron_cu128.sqsh`, converted from the `.sif` with `container/sif_to_enroot.sh`.
-
-`run_container.sh` picks whichever runtime is installed.
+Everything runs inside one container image; you don't need a conda env or venv. `nscc/env.sh` sets the paths (`P C MODEL MIX RUN PYTHONPATH`),
+and `$RUN` is `container/run_container.sh`. Run the commands below on a GPU node.
 
 ```bash
-P=/scratch/prj0000000234/sailorhb/toolkits/qwen3_omni_speechllm
-C=/scratch/prj0000000234/sailorhb/container
-MODEL=$(ls -d /scratch/prj0000000234/sailorhb/hf_models/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/snapshots/* | head -1)
-
-export PYTHONPATH=$P:/scratch/prj0000000234/sailorhb/toolkits/pydeps   # our code + the MDS reader
-export OMNI_MDS_CACHE=/tmp/$USER/omni_mds_cache                          # node-local shard cache
-export NPROC_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3                     # the script re-launches under torchrun
-cd $P
+cd /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm
+source nscc/env.sh
+export NPROC_PER_NODE=4 CUDA_VISIBLE_DEVICES=0,1,2,3        # the script re-launches under torchrun
 ```
 
 **HF trainer, LoRA on thinker attention + audio projector, global batch 32:**
 ```bash
-bash $C/run_container.sh python train_omni.py sft \
-    --mix mixes/st_v0.yaml --val_choose 32 \
+$RUN python train_omni.py sft \
+    --mix $MIX --val_choose 32 \
     --model "$MODEL" --model_type qwen3_omni_moe --experts_impl grouped_mm \
     --tuner_type lora --target_modules $(cat lora_targets_thinker_attn_audio_proj.txt) --lora_rank 16 --lora_alpha 32 \
     --torch_dtype bfloat16 --attn_impl flash_attn --padding_free true \
@@ -93,8 +106,8 @@ bash $C/run_container.sh python train_omni.py sft \
 
 **Megatron-SWIFT, expert parallel over 4 GPUs:**
 ```bash
-bash $C/run_container.sh python train_omni.py megatron \
-    --mix mixes/st_v0.yaml --val_choose 32 \
+$RUN python train_omni.py megatron \
+    --mix $MIX --val_choose 32 \
     --model "$MODEL" --model_type qwen3_omni_moe \
     --tuner_type lora --target_modules linear_qkv linear_proj --lora_rank 16 --lora_alpha 32 \
     --expert_model_parallel_size 4 --moe_grouped_gemm true --moe_permute_fusion true \
@@ -102,7 +115,7 @@ bash $C/run_container.sh python train_omni.py megatron \
     --train_iters 1000 --save_steps 200 --eval_steps 200 --finetune true --output_dir outputs/my_meg_run
 ```
 
-**Job scripts:** in Slurm, copy one from `slurm/`. `train_4gpu_both.sbatch` and `train_8gpu_both.sbatch` run both trainers with resume checks.
+**Job scripts:** `qsub pbs/<name>.pbs` (add `-q dedicated` for the dedicated queue). `train_4gpu_both.pbs`, `train_8gpu_both.pbs` (one node) and `train_32gpu_4node.pbs` (4 nodes x 8 GPUs) run both trainers with resume checks. Details: `nscc/README.md`.
 
 **Resume:**
 - HF: `--resume_from_checkpoint <ckpt>`.
@@ -122,7 +135,7 @@ bash $C/run_container.sh python train_omni.py megatron \
 | `--omni_cache_root`, `--cache_limit`, `--shuffle_block_size`, `--num_canonical_nodes` | – | Mosaic reader settings |
 
 Environment variables:
-- `OMNI_GPU_MEM_GB=80` caps GPU memory, to emulate an H100 on an H200.
+- `OMNI_GPU_MEM_GB=80` caps GPU memory (emulates an H100 on an H200; harmless on H100).
 - `OMNI_LOG_SAMPLE_IDS=<dir>` logs which samples each GPU reads (used by `tests/check_partitions.py`).
 
 Guards added automatically unless you pass the flag yourself:
@@ -147,10 +160,13 @@ omni_mds/                     data layer
   instructions_lib/, text_normalizers/, metrics/   copied from multimodal_trainer (see VENDORED.md)
 mixes/st_v0.yaml              ST-only pilot mix (8 train + 6 test CoVoST2 / GigaSpeech / People's Speech sets)
 lora_targets_thinker_attn_audio_proj.txt   explicit LoRA targets: 48 thinker attention layers + audio proj1/proj2
-slurm/                        job scripts (smoke tests, 4/8-GPU runs, Megatron resume debugging)
+pbs/                          PBS job scripts for NSCC: smoke tests, 4/8-GPU runs, 4-node x 8-GPU run, Megatron resume debugging
+nscc/                         NSCC settings (env.sh), per-node launcher for multi-node jobs, NCCL check; see nscc/README.md
+container/                    launchers, image recipe, container docs (the image itself lives in CONTAINER_HOME); see container/README.md
+slurm/                        LEGACY: the same jobs as Slurm scripts for the previous cluster (Orion); pbs/ is the current set
 tests/                        CPU tests and run summarisers
 tools/vendored/               old MDS conversion and sampling scripts (reference)
-transfer/                     copy and relocate kit for another cluster, requirement files
+transfer/                     LEGACY copy/relocate kit for the Orion -> H100 move (Orion paths); requirements*.txt are still current
 docs/                         upstream bug report draft (Megatron optimizer resume)
 third_party/ms-swift/         git submodule: ms-swift @ 8ec0455 (the version inside the container; reference + rebuilds)
 env_backup/                   package lists of the earlier conda/venv setups (reference)
@@ -158,25 +174,19 @@ env_backup/                   package lists of the earlier conda/venv setups (re
 infer_*.py, make_swift_asr_data.py, train_lora_asr_smoke.sh, run_env_check.sh   early (09-24) inference and LoRA checks
 ```
 
-Outside this directory, on Orion:
-
-| Path | What |
-|---|---|
-| `../../container/` | `swift_megatron_cu128.sif` (Apptainer) and `.sqsh` (enroot); `run_container.sh` (picks the runtime), `run_container_enroot.sh`, `sif_to_enroot.sh`, build recipe, `README.md` |
-| `../pydeps/` | mosaicml-streaming 0.13 and codecs, installed `--no-deps` (not in the image) |
-| `../ms-swift/` | Older standalone ms-swift checkout, same commit. `container/build_container.sh` still builds from it; `third_party/ms-swift` is the tracked copy |
-| `../../hf_models/` | model weights (HF cache) |
+Outside this directory (big files, not in git): `CONTAINER_HOME=/scratch/users/astar/ares/sailorhb/container/` with the enroot image, model weights, `pydeps/` (mosaicml-streaming 0.13 and codecs, installed `--no-deps`) and caches. Contents and how to recreate them: `container/README.md`.
 
 ## Tests
 
 | Test | Where | What it checks |
 |---|---|---|
 | `tests/test_sea_text.py` | CPU | Prompt/target parity with the old trainer (8,392/8,392), dropout, augmentation |
-| `tests/test_mosaic_stream.py` | CPU | Reader: same samples, `choose` per epoch, fixed validation set, disjoint ranks, exact resume |
+| `tests/test_mosaic_stream.py` | CPU | Reader: same samples, `choose` per epoch, fixed validation set, disjoint ranks (needs >= 2 GPUs on the host), exact resume |
 | `tests/check_encode_cpu.py` | CPU | Full data path without the model: 13 audio tokens/s, label masking, padding-free batches |
-| `slurm/smoke_1gpu.sbatch`, `smoke_megatron_1gpu.sbatch` | 1 GPU | Train, eval, resume, 80 GB cap |
-| `slurm/smoke_audio_lora_2gpu.sbatch` | 2 GPUs, ~5 min | Both trainers with audio-encoder LoRA. **Good first check on a new cluster** |
-| `slurm/train_4gpu_both.sbatch`, `train_8gpu_both.sbatch` | 4 / 8 GPUs | Both trainers, resume, partition check |
+| `pbs/smoke_1gpu.pbs`, `smoke_megatron_1gpu.pbs` | 1 GPU | Train, eval, resume, 80 GB cap |
+| `pbs/smoke_audio_lora_2gpu.pbs` | 2 GPUs, ~12 min | Both trainers with audio-encoder LoRA. **Good first check on a new cluster** |
+| `pbs/train_4gpu_both.pbs`, `train_8gpu_both.pbs` | 4 / 8 GPUs | Both trainers, resume, partition check |
+| `pbs/train_32gpu_4node.pbs` | 4 nodes x 8 GPUs | NCCL bandwidth, then both trainers on 32 GPUs with resume |
 
 `tests/summarize_smoke.py <out_dir> A B C` summarises a run. It prints loss, memory, speed, the resume loss difference, adapter contents (including which encoder layers have LoRA and whether they trained) and the saved data position.
 
@@ -200,43 +210,41 @@ The two trainers report eval loss on different scales (1.31 vs. 0.80); compare e
 
 Details, sizing, the hand-off package and licences: **`DEPLOYMENT.md`**.
 
-## Moving to another cluster
+## Cluster history
 
-`transfer/TRANSFER_TO_H100.md` covers moving to an H100 cluster such as ASPIRE2A+:
-- `copy_to_h100.sh`: copies the code, container, model and data (~275 GB) with rsync, dry run by default;
-- `relocate_paths.sh`: rewrites the hard-coded `/scratch/...` paths once;
-- `requirements*.txt`: pinned packages, for a rebuild without Apptainer.
-
-H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 80 GB GPUs.
+- **Orion (Slurm, H200, Apptainer)**: where the pipeline was built and tested through 2026-09-29. Its scripts are kept as `slurm/` and `transfer/`, marked legacy.
+- **NSCC (PBS, H100 80 GB, enroot)**: the current home, from 2026-09-29. `pbs/`, `nscc/` and `container/` are the current scripts.
+  H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 80 GB GPUs.
 
 ## Documentation map
 
 | File | Read it for |
 |---|---|
 | `PIPELINE_PLAN.md` | Design, code provenance, parallelism, H100 portability, **progress and results (§10)** |
-| `DECISION_LOG.md` | Why things are the way they are (D1–D24), bugs found (B1–B21), evidence per job |
+| `DECISION_LOG.md` | Why things are the way they are (D1–D25), bugs found (B1–B21), evidence per job |
 | `DEPLOYMENT.md` | Serving, eval backends, partner on-prem hand-off, training rules for deployability |
 | `FINETUNING_GUIDE.md` | Research plan: stages, SEA data, architecture ideas, RL, evaluation |
 | `MDS_DATA_PIPELINE.md` | How the MDS data reaches ms-swift; streaming vs. map-style |
 | `TRAINING_AND_LOCAL_VOCAB_EXPERIMENTS.md` | Grounded training and contextual-biasing experiments |
 | `WORKLOG.md` | Day-by-day log |
 | `omni_mds/VENDORED.md` | Files copied from the old trainer, with md5s |
-| `../../container/README.md` | The container: versions, usage, smoke tests |
+| `container/README.md` | The container: where it is, versions, what was added, launcher, rebuilding |
+| `nscc/README.md` | Running on NSCC: PBS scripts, multi-node design, dedicated-queue tests |
 
 ## Gotchas
 
-- **Always launch through `run_container.sh`.** It isolates the container from `~/.local`, sets `HF_HOME`, offline mode and `NLTK_DATA`, and forwards the variables training needs. It works with Apptainer or enroot (`CONTAINER_RUNTIME` forces one).
+- **Always launch through `run_container.sh`.** It isolates the container from `~/.local`, sets `HF_HOME`, offline mode and `NLTK_DATA`, and forwards the variables training needs. It works with Apptainer or enroot (`CONTAINER_RUNTIME` forces one); NSCC has only enroot. Host variables not in its forward list are invisible inside.
 - **Megatron:**
   - `NPROC_PER_NODE` must be set, even to 1.
   - TP, PP and CP must stay 1, because the mosaic reader partitions by global rank. EP is fine.
   - `--save_total_limit` must be ≥ 2.
 - **LoRA targets:** use explicit module lists. Regex targets like `q_proj|k_proj` also match the audio encoder (B1). After training, check the adapter with `summarize_smoke.py`.
-- **Disk:** `/scratch` is nearly full. Never merge LoRA per checkpoint. Save optimizer state only when a run must be resumable (`PIPELINE_PLAN.md` §10.5).
+- **Disk:** checkpoints are GBs; keep `outputs/` small. Never merge LoRA per checkpoint. Save optimizer state only when a run must be resumable (`PIPELINE_PLAN.md` §10.5).
 - **Pinned versions:**
   - ms-swift is the submodule `third_party/ms-swift`, pinned at `8ec0455`, and `train_omni.py` depends on its internals (D23).
   - The code that actually runs is the copy installed in the container. The submodule records which version that is.
 - **Upgrading ms-swift:**
   1. On a branch, move the pin: `git -C third_party/ms-swift fetch && git -C third_party/ms-swift checkout <commit>`.
   2. Rebuild the container from that source.
-  3. Re-run `slurm/smoke_audio_lora_2gpu.sbatch` and the resume tests.
+  3. Re-run `pbs/smoke_audio_lora_2gpu.pbs` and the resume tests.
   4. If they pass, commit the new pin together with the new image. Never commit a pin the container doesn't match.

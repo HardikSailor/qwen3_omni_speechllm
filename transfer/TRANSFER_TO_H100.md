@@ -1,3 +1,5 @@
+> **LEGACY (Orion -> H100 move, 2026-09-29).** Written for the previous cluster and its paths. On NSCC the container, model and data are already in place: see `../container/README.md` and `../nscc/README.md`. `requirements*.txt` in this folder are still current.
+
 # Moving the Qwen3-Omni toolkit to the H100 cluster
 
 Written 2026-09-29. The whole environment is **one Apptainer image**. You do not need a conda env or venv. Copy the image, the code, the model and the data, then rewrite paths once.

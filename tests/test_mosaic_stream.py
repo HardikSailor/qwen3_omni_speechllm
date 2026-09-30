@@ -1,11 +1,8 @@
 """Tests for omni_mds.mosaic_stream (PIPELINE_PLAN.md §6, phase 2, reader option C).
 
 CPU only; uses the three small CoVoST2 X->en train sets (~0.1 GB), cached under /tmp/$USER/omni_mds_test.
-Needs mosaicml-streaming from toolkits/pydeps:
-    cd toolkits/qwen3_omni_speechllm
-    apptainer exec --cleanenv -B /scratch,/tmp \
-        --env PYTHONPATH=$PWD:/scratch/prj0000000234/sailorhb/toolkits/pydeps \
-        /scratch/prj0000000234/sailorhb/container/swift_megatron_cu128.sif python tests/test_mosaic_stream.py
+Needs mosaicml-streaming (container/pydeps, see container/README.md). Run in an interactive job:
+    source nscc/env.sh && $RUN python tests/test_mosaic_stream.py
 """
 import collections
 import gc
@@ -27,7 +24,7 @@ from omni_mds.mix import DatasetSpec  # noqa: E402
 from omni_mds.mosaic_stream import OmniStreamingDataset, StreamConfig, make_dataloader  # noqa: E402
 from omni_mds.sea_text import RowConfig, build_row  # noqa: E402
 
-BASE = '/scratch/prj0000000234/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal/train/ST'
+BASE = '/data/projects/13003558/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal/train/ST'
 TEST_ROOT = f'/tmp/{getpass.getuser()}/omni_mds_test'
 SPECS = [
     DatasetSpec(name='ST_CoVoST2_ta_en_30_ST', path=f'{BASE}/CoVoST2_ta_en_30_ST', task='ST', src_lang='ta', tgt_lang='en'),

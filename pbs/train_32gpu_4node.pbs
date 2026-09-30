@@ -1,0 +1,78 @@
+#!/bin/bash
+#PBS -N omni_4x8
+#PBS -l select=4:ngpus=8:ncpus=112:mem=1880GB
+#PBS -l place=scatter:excl
+#PBS -l walltime=04:00:00
+#PBS -q normal
+#PBS -P 13003558
+#PBS -j oe
+#PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/train_32gpu_4node.log
+#
+# Multi-node check: both trainers on 4 nodes x 8 GPUs = 32 GPUs, mixes/st_v0.yaml, global batch 32 (micro-batch 1 x grad-accum 1
+# x 32 ranks), padding-free. Same recipe as train_8gpu_both.pbs, so loss curves should be close to the 8-GPU run.
+#   N0   NCCL all_reduce check (bandwidth; a few GB/s = InfiniBand not used -> stop and fix before training)
+#   H32A HF DDP (swift sft) 60 steps, eval + checkpoint at 30/60     H32B  resume H32A step 30 -> 60
+#   M32A Megatron EP=8 (experts inside a node, DP=32) 60 iterations  M32B  resume M32A iteration 30 with optimizer
+# Submit: qsub -q dedicated pbs/train_32gpu_4node.pbs      Summary: outputs/train_32gpu/summary.txt
+# Dry run of the launcher logic (no GPUs, no scheduler): DRY_RUN=1 PBS_NODEFILE=<file> bash pbs/train_32gpu_4node.pbs
+# Launch: pbsdsh starts nscc/node_run.sh on every node; it derives NNODES / NODE_RANK / MASTER_ADDR from the node list.
+set -u
+source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # P, C, MODEL, MIX, RUN, ...
+O=$P/outputs/train_32gpu
+mkdir -p $O; cd $P
+NODES=$O/nodes.txt
+awk '{sub(/\..*/,"")} !s[$0]++' "${PBS_NODEFILE:?not inside a PBS job}" > $NODES
+echo "job ${PBS_JOBID:-none} start $(date)"; echo "nodes: $(tr '\n' ' ' < $NODES)"
+GPUS=8
+LAUNCH=(pbsdsh --)
+[ "${DRY_RUN:-0}" = 1 ] && LAUNCH=(bash -c 'for n in $(cat '$NODES'); do NODE_RUN_HOST=$n "$@"; done' _)   # dry run: emulate the nodes one after another here
+
+# run_phase <name> <port> <shell command using $RUN and the trainer args>   -> $O/<name>.log (+ .node<K>.log)
+run_phase () {
+  local name=$1 port=$2 cmd=$3
+  echo "=== $name $(date)"
+  "${LAUNCH[@]}" env DRY_RUN=${DRY_RUN:-0} bash $P/nscc/node_run.sh $NODES $O/$name $port $GPUS -- bash -c "$cmd"
+  local rc=$?; echo "$name exit=$rc"
+}
+
+# --- pre-flight: NCCL bandwidth across the 4 nodes
+run_phase N0 29600 '$RUN python -m torch.distributed.run --nnodes $NNODES --node_rank $NODE_RANK --nproc_per_node $NPROC_PER_NODE --master_addr $MASTER_ADDR --master_port $MASTER_PORT '$P'/nscc/nccl_check.py'
+grep -h nccl_check $O/N0.log 2>/dev/null
+
+HF=(--mix $MIX --val_choose 32
+    --model "$MODEL" --model_type qwen3_omni_moe --experts_impl grouped_mm
+    --tuner_type lora --target_modules $(cat lora_targets_thinker_attn_audio_proj.txt) --lora_rank 16 --lora_alpha 32
+    --torch_dtype bfloat16 --attn_impl flash_attn --padding_free true
+    --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 1
+    --learning_rate 1e-4 --warmup_ratio 0.05 --gradient_checkpointing true --max_length 2048
+    --logging_steps 1 --dataloader_num_workers 4 --report_to none --data_seed 42 --seed 42
+    --save_only_model false --save_total_limit 2 --max_steps 60 --save_steps 30 --eval_steps 30)
+MEG=(--mix $MIX --val_choose 32
+    --model "$MODEL" --model_type qwen3_omni_moe
+    --tuner_type lora --lora_rank 16 --lora_alpha 32 --target_modules linear_qkv linear_proj
+    --freeze_llm false --freeze_vit true --freeze_aligner true
+    --expert_model_parallel_size 8 --moe_grouped_gemm true --moe_permute_fusion true --moe_aux_loss_coeff 1e-3
+    --micro_batch_size 1 --global_batch_size 32 --lr 1e-4 --min_lr 1e-5 --lr_warmup_fraction 0.05
+    --recompute_granularity selective --cross_entropy_loss_fusion true --max_length 2048 --attention_backend flash
+    --merge_lora false --save_total_limit 2 --no_save_optim false --logging_steps 1 --dataloader_num_workers 4
+    --data_seed 42 --seed 42 --train_iters 60 --save_steps 30 --eval_steps 30)
+q () { printf '%q ' "$@"; }              # shell-quote an argument array for bash -c
+
+run_phase H32A 29601 "OMNI_LOG_SAMPLE_IDS=$O/ids_H32A \$RUN python train_omni.py sft $(q "${HF[@]}") --output_dir $O/H32A"
+CK=$(ls -d $O/H32A/v*/checkpoint-30 2>/dev/null | head -1); echo "H32A checkpoint-30: $CK $(cat $CK/omni_mosaic_state.json 2>/dev/null)"
+[ -n "$CK" ] && run_phase H32B 29602 "\$RUN python train_omni.py sft $(q "${HF[@]}") --resume_from_checkpoint $CK --output_dir $O/H32B"
+
+run_phase M32A 29603 "OMNI_LOG_SAMPLE_IDS=$O/ids_M32A \$RUN python train_omni.py megatron $(q "${MEG[@]}") --finetune true --output_dir $O/M32A"
+CK=$(ls -d $O/M32A/v*/checkpoint-30 2>/dev/null | head -1); echo "M32A checkpoint-30: $CK $(cat $CK/omni_mosaic_state.json 2>/dev/null)"
+[ -n "$CK" ] && run_phase M32B 29604 "\$RUN python train_omni.py megatron $(q "${MEG[@]}") --mcore_adapter $CK --finetune false --no_load_optim false --no_load_rng false --output_dir $O/M32B"
+
+echo "end $(date)"
+[ "${DRY_RUN:-0}" = 1 ] && exit 0
+{
+  echo "## NCCL"; grep -h nccl_check $O/N0.log
+  echo; echo "## HF DDP (swift sft), 32 GPUs";  $RUN python tests/summarize_smoke.py $O H32A H32B H32A
+  echo; echo "partitions H32A:";  $RUN python tests/check_partitions.py $O/ids_H32A
+  echo; echo "## Megatron EP=8, 32 GPUs";  $RUN python tests/summarize_smoke.py $O M32A M32B M32A
+  echo; echo "partitions M32A:";  $RUN python tests/check_partitions.py $O/ids_M32A
+} 2>&1 | grep -v "pynvml\|FutureWarning" > $O/summary.txt
+cat $O/summary.txt

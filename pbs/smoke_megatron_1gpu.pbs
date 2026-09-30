@@ -1,14 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=omni_smokeM1
-#SBATCH --partition=h200p
-#SBATCH --account=prj0000000234
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:h200:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=240G
-#SBATCH --time=02:00:00
-#SBATCH --output=/scratch/prj0000000234/sailorhb/toolkits/qwen3_omni_speechllm/outputs/smoke_megatron/slurm-%j.out
+#PBS -N omni_smokeM1
+#PBS -l select=1:ngpus=1:ncpus=14:mem=235GB
+#PBS -l walltime=02:00:00
+#PBS -q normal
+#PBS -P 13003558
+#PBS -j oe
+#PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/smoke_megatron_1gpu.log
 #
 # Phase 7 smoke test on 1 GPU (PIPELINE_PLAN.md §6): train_omni.py megatron on mixes/st_v0.yaml.
 # LoRA r16 on thinker attention (linear_qkv, linear_proj), encoders/aligner frozen, EP=1 (1 GPU), micro-batch 1,
@@ -16,19 +13,16 @@
 #   MA  20 iterations, eval (6 CoVoST2 sets x 32) + checkpoint (with optimizer, resumable) at 10 and 20
 #   MB  resume MA's iteration-10 checkpoint (--mcore_adapter ... --finetune false), run to 20: losses 11..20 ~ MA
 #   MC  OMNI_GPU_MEM_GB=80, 10 iterations, no eval / save
-# Submit: sbatch slurm/smoke_megatron_1gpu.sbatch     Summary: outputs/smoke_megatron/summary.txt
+# Submit: qsub pbs/smoke_megatron_1gpu.pbs     Summary: outputs/smoke_megatron/summary.txt
 set -u
-P=/scratch/prj0000000234/sailorhb/toolkits/qwen3_omni_speechllm
+source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # sets P, C, MODEL, MIX, RUN, PYTHONPATH, data + container paths
 O=$P/outputs/smoke_megatron
-RUN="bash /scratch/prj0000000234/sailorhb/container/run_container.sh"
-MODEL=$(ls -d /scratch/prj0000000234/sailorhb/hf_models/models--Qwen--Qwen3-Omni-30B-A3B-Instruct/snapshots/* | head -1)
-export PYTHONPATH=$P:/scratch/prj0000000234/sailorhb/toolkits/pydeps
 export OMNI_MDS_CACHE=/tmp/$USER/omni_mds_cache
 export NPROC_PER_NODE=1 CUDA_VISIBLE_DEVICES=0 MASTER_PORT=29561
 mkdir -p $O; cd $P
 echo "node $(hostname)  start $(date)"; nvidia-smi -L
 
-COMMON=(--mix mixes/st_v0.yaml --val_choose 32
+COMMON=(--mix $MIX --val_choose 32
     --model "$MODEL" --model_type qwen3_omni_moe
     --tuner_type lora --lora_rank 16 --lora_alpha 32 --target_modules linear_qkv linear_proj
     --freeze_llm false --freeze_vit true --freeze_aligner true

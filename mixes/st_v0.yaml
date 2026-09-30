@@ -13,7 +13,7 @@
 #   - CoVoST2 ta->en targets are often lower-case, unpunctuated and loose ("name of tamil is moon lovely");
 #   - People's Speech en->ms targets look machine-translated, with numbers spelled out ("dua ribu lapan belas").
 
-dataset_basedir: /scratch/prj0000000234/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal
+dataset_basedir: /data/projects/13003558/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal
 
 train:
   # en -> X

@@ -1,5 +1,7 @@
 # Qwen3-Omni adaptation: work log
 
+> **Cluster note (2026-09-30):** this document was written on the previous cluster (Orion: Slurm, H200, Apptainer). The project now runs on NSCC (PBS, H100, enroot). Map the old paths with the *Paths* section of `README.md`; the container is described in `container/README.md`. Job numbers (e.g. 150431) are Orion Slurm jobs.
+
 ## 2026-09-24
 
 ### Done today
@@ -149,3 +151,23 @@
   - It binds the host `/tmp`, because enroot's default `/tmp` is in RAM.
 - **Test, job 150477:** passed. GPUs, TE and versions OK; `/tmp` on xfs; the audio-LoRA smoke test on both trainers matches the Apptainer results. Job 150476 failed on a converter bug (B21).
 - `copy_to_h100.sh`: `IMAGE=sqsh` copies the enroot image. `relocate_paths.sh` handles both launchers.
+
+
+## 2026-09-29/30: moved to NSCC (PBS, H100, enroot)
+
+**Done**
+- Checked the copied container on NSCC in an interactive GPU job: enroot image, model and MDS data are all present; `run_container.sh` picks enroot.
+- Installed `mosaicml-streaming` (`pydeps`) offline: wheels from the login node, `pip install --no-index --target` inside the container.
+- Ran on 1 H100: `train_omni.py sft` and `megatron` with resume (60.3 / 61.5 GiB, fits 80 GB), then `pbs/smoke_audio_lora_2gpu.pbs` on 2 GPUs through `qsub` (job 214221): pass.
+- Converted the Slurm scripts to PBS (`pbs/`), added `nscc/` (env, per-node launcher, NCCL check) and brought the container files into the repo (`container/`).
+- Wrote `pbs/train_32gpu_4node.pbs` (4 nodes x 8 GPUs) and used the converted `train_8gpu_both.pbs` (1 node x 8 GPUs) for the dedicated-queue tests.
+- Docs: NSCC paths in the README and tests; `container/README.md` (where the image is, what is in it, what was added); banners on the older docs; D25.
+
+**Findings**
+- Resume diff on H100: HF 0.007, Megatron 0.020 (H200: 0.003 to 0.004): not investigated.
+- The stale `--no_save_optim true` in the Megatron resume smoke script (B22).
+
+**Next**
+1. `qsub -q dedicated pbs/train_8gpu_both.pbs`, then `pbs/train_32gpu_4node.pbs`: read the NCCL line first (`nscc/README.md`).
+2. Check the Megatron resume diff on 8 GPUs.
+3. The eval script; vLLM inference on NSCC; `swift export --merge_lora` (see `DEPLOYMENT.md` §7).

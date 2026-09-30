@@ -1,6 +1,8 @@
 # Qwen3-Omni training pipeline: plan and code provenance
 
-Written 2026-09-28. **Status: plan only. None of the new code (`omni_mds/`, entry script, eval script) exists yet.**
+> **Cluster note (2026-09-30):** this document was written on the previous cluster (Orion: Slurm, H200, Apptainer). The project now runs on NSCC (PBS, H100, enroot). Map the old paths with the *Paths* section of `README.md`; the container is described in `container/README.md`. Job numbers (e.g. 150431) are Orion Slurm jobs.
+
+Written 2026-09-28 as a plan; **status 2026-09-30: `omni_mds/` and `train_omni.py` are built and tested (progress and results in §10); the eval script does not exist yet.** Both trainers run on NSCC (H100, PBS, enroot).
 
 This document describes the pipeline we will build to fine-tune Qwen3-Omni-30B-A3B on our SEA/SG MDS data. For each part it says where the code comes from:
 - **[OLD]** the old MERaLiON trainer, `toolkits/multimodal_trainer`;

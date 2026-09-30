@@ -4,7 +4,7 @@
 #   bash run_env_check.sh py2hf --talker  # one env, extra args passed to the python script
 cd "$(dirname "$0")"
 CONDA_ROOT=/home/users/astar/i2r/sailorhb/miniconda3
-export HF_HOME=/scratch/prj0000000234/sailorhb/hf_models
+export HF_HOME=/scratch/users/astar/ares/sailorhb/container
 export HF_HUB_OFFLINE=1
 export PYTHONNOUSERSITE=1  # envs must be self-contained; ignore ~/.local site-packages
 mkdir -p logs

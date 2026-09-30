@@ -60,3 +60,7 @@ venv/
 *.swp
 *~
 .DS_Store
+
+# Container images (large; live in CONTAINER_HOME, not in git)
+*.sif
+*.sqsh

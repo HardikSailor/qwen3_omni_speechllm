@@ -5,9 +5,8 @@
 With NPROC_PER_NODE set it re-launches itself under torchrun, like the swift / megatron CLIs.
 
 Inside the container (PIPELINE_PLAN.md §3.2, §10):
-    PYTHONPATH=<this dir>:/scratch/prj0000000234/sailorhb/toolkits/pydeps \
-    bash /scratch/prj0000000234/sailorhb/container/run_container.sh \
-        python train_omni.py sft --mix mixes/st_v0.yaml --model <path> --tuner_type lora ...
+    source nscc/env.sh      # PYTHONPATH (this dir + container/pydeps), MODEL, MIX, RUN
+    $RUN python train_omni.py sft --mix mixes/st_v0.yaml --model <path> --tuner_type lora ...
 
 What this changes compared with plain `swift sft --dataset ...`:
   - datasets: `_prepare_dataset` returns OmniStreamingDataset (train/validation from the mix YAML); each sample is

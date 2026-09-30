@@ -19,7 +19,7 @@ import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = "/scratch/prj0000000234/sailorhb/hf_models/"
+CACHE_DIR = "/scratch/users/astar/ares/sailorhb/container/"
 MODEL_ID = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 

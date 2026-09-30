@@ -1,0 +1,60 @@
+#!/bin/bash
+#PBS -N omni_optimdbg
+#PBS -l select=1:ngpus=1:ncpus=14:mem=235GB
+#PBS -l walltime=02:00:00
+#PBS -q normal
+#PBS -P 13003558
+#PBS -j oe
+#PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/debug_megatron_optim_resume.log
+#
+# Debug Megatron-SWIFT LoRA resume with optimizer state (PIPELINE_PLAN.md §10.4): `KeyError: 'optimizer'`
+# (default dp_reshardable format) / NaN grads after load (fully_reshardable).
+#   E1/E2  plain `megatron sft` on LibriSpeech JSONL (no train_omni.py): save at 3, resume with optimizer -> upstream?
+#   E3/E4  train_omni.py with --use_distributed_optimizer false: save at 5, resume with optimizer; loss 6..10 vs E3
+#   E5     train_omni.py default resume (MA/checkpoint-10) with OMNI_DEBUG_OPTIM_LOAD=1: print loaded optimizer keys
+set -u
+source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # sets P, C, MODEL, MIX, RUN, PYTHONPATH, data + container paths
+O=$P/outputs/debug_optim
+export OMNI_MDS_CACHE=/tmp/$USER/omni_mds_cache
+export NPROC_PER_NODE=1 CUDA_VISIBLE_DEVICES=0 MASTER_PORT=29563
+mkdir -p $O; cd $P
+echo "node $(hostname)  start $(date)"
+
+LORA=(--model "$MODEL" --model_type qwen3_omni_moe
+    --tuner_type lora --lora_rank 16 --lora_alpha 32 --target_modules linear_qkv linear_proj
+    --freeze_llm false --freeze_vit true --freeze_aligner true
+    --expert_model_parallel_size 1 --moe_grouped_gemm true --moe_permute_fusion true --moe_aux_loss_coeff 1e-3
+    --micro_batch_size 1 --global_batch_size 4 --lr 1e-4 --min_lr 1e-5 --lr_warmup_fraction 0.05
+    --recompute_granularity selective --cross_entropy_loss_fusion true --max_length 2048 --attention_backend flash
+    --merge_lora false --logging_steps 1 --dataloader_num_workers 4 --data_seed 42 --seed 42 --eval_iters 0)
+PLAIN=(--dataset $P/data/asr_train.jsonl --split_dataset_ratio 0 --dataset_num_proc 4)
+OMNI=(--mix $MIX)
+
+echo "=== E1 plain megatron sft, save at 3 $(date)"
+$RUN megatron sft "${LORA[@]}" "${PLAIN[@]}" --train_iters 6 --save_steps 3 --finetune true --no_save_optim false \
+    --output_dir $O/E1 > $O/E1.log 2>&1; echo "E1 exit=$?"
+CK=$(ls -d $O/E1/v*/checkpoint-3 2>/dev/null | head -1)
+echo "=== E2 plain resume with optimizer from $CK $(date)"
+[ -n "$CK" ] && { $RUN megatron sft "${LORA[@]}" "${PLAIN[@]}" --train_iters 6 --save_steps 100000 \
+    --mcore_adapter $CK --finetune false --no_load_optim false --no_load_rng false --no_save_optim true \
+    --output_dir $O/E2 > $O/E2.log 2>&1; echo "E2 exit=$?"; grep -m2 "KeyError\|NaN\|Error:" $O/E2.log; }
+
+echo "=== E3 omni, no distributed optimizer, save at 5 $(date)"
+$RUN python train_omni.py megatron "${OMNI[@]}" "${LORA[@]}" --use_distributed_optimizer false --train_iters 10 \
+    --save_steps 5 --finetune true --no_save_optim false --output_dir $O/E3 > $O/E3.log 2>&1; echo "E3 exit=$?"
+CK=$(ls -d $O/E3/v*/checkpoint-5 2>/dev/null | head -1)
+echo "=== E4 omni, no distributed optimizer, resume with optimizer from $CK $(date)"
+[ -n "$CK" ] && { $RUN python train_omni.py megatron "${OMNI[@]}" "${LORA[@]}" --use_distributed_optimizer false \
+    --train_iters 10 --save_steps 100000 --mcore_adapter $CK --finetune false --no_load_optim false \
+    --no_load_rng false --no_save_optim true --output_dir $O/E4 > $O/E4.log 2>&1; echo "E4 exit=$?"
+    grep -m2 "KeyError\|NaN\|Error:" $O/E4.log; }
+
+echo "=== E5 omni default resume with debug print $(date)"
+CK=$(ls -d $P/outputs/smoke_megatron/MA/v*/checkpoint-10 | head -1)
+OMNI_DEBUG_OPTIM_LOAD=1 $RUN python train_omni.py megatron "${OMNI[@]}" "${LORA[@]}" --train_iters 12 \
+    --save_steps 100000 --mcore_adapter $CK --finetune false --no_load_optim false --no_save_optim true \
+    --output_dir $O/E5 > $O/E5.log 2>&1; echo "E5 exit=$?"
+sed -n '/\[omni debug\]/,/Traceback\|iteration/p' $O/E5.log | head -60
+
+echo "end $(date)"
+{ $RUN python tests/summarize_smoke.py $O E1 E2 E1; echo; $RUN python tests/summarize_smoke.py $O E3 E4 E3; } 2>&1 | grep -v pynvml

@@ -1,5 +1,7 @@
 # Adapting Qwen3-Omni-30B-A3B for multi-task audio understanding in Southeast Asia and Singapore
 
+> **Cluster note (2026-09-30):** this document was written on the previous cluster (Orion: Slurm, H200, Apptainer). The project now runs on NSCC (PBS, H100, enroot). Map the old paths with the *Paths* section of `README.md`; the container is described in `container/README.md`. Job numbers (e.g. 150431) are Orion Slurm jobs.
+
 Tasks in scope: **ASR, speech translation (ST), speech emotion recognition (SER), spoken QA (SQA), acoustic event classification/captioning (AEC)**, and similar tasks.
 
 Target setting: **Southeast Asian and Singapore languages**, including code-switching and local cultural knowledge. That means:

@@ -10,7 +10,7 @@ os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
 
 from huggingface_hub import snapshot_download
 
-CACHE_DIR = "/scratch/prj0000000234/sailorhb/hf_models/"
+CACHE_DIR = "/scratch/users/astar/ares/sailorhb/container/"
 MODEL_ID = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 
 

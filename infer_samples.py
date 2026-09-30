@@ -22,7 +22,7 @@ from qwen_omni_utils import process_mm_info
 from transformers import Qwen3OmniMoeForConditionalGeneration, Qwen3OmniMoeProcessor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = "/scratch/prj0000000234/sailorhb/hf_models/"
+CACHE_DIR = "/scratch/users/astar/ares/sailorhb/container/"
 MODEL_ID = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 DATA = "/scratch/prj0000000234/sailorhb/data"
 ASR_PROMPT = "Transcribe the English audio into text. Output only the transcription."

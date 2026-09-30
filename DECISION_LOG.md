@@ -1,5 +1,7 @@
 # Qwen3-Omni fine-tuning: how we got here (decision log)
 
+> **Cluster note (2026-09-30):** this document was written on the previous cluster (Orion: Slurm, H200, Apptainer). The project now runs on NSCC (PBS, H100, enroot). Map the old paths with the *Paths* section of `README.md`; the container is described in `container/README.md`. Job numbers (e.g. 150431) are Orion Slurm jobs.
+
 Written 2026-09-28. It covers the work from 2026-09-24 to 2026-09-28 and records **what** we decided, **why**, and **what evidence** we had at the time. Detailed designs live in the documents listed in §1. This file links them together and does not repeat them.
 
 Conventions:
@@ -322,6 +324,22 @@ Conventions:
   - `/tmp` on xfs;
   - the audio-LoRA smoke test passed on both trainers, same as under Apptainer: loss 1.030 → 0.723 (HF) / 1.033 → 0.721 (Megatron); memory 61.8 / 34.4 GiB; 24/24 encoder `lora_B` trained.
 - **First attempt:** job 150476 failed in the converter. The SIF keeps its config at the top level of the JSON, not under `config` (B21).
+
+### D25. main = NSCC: container files in the repo, PBS scripts, offline pydeps (2026-09-30, user)
+- **Decision:** the repo on `main` is the NSCC version. Orion material stays as legacy (`slurm/`, `transfer/`, marked in their READMEs; `pbs/convert_slurm_to_pbs.py` refuses to overwrite `pbs/` without `--force`).
+- **Container files are in git** (`container/`: launchers, `.def`, build and convert scripts, `smoke_test.sh`, `README.md`). The big files stay outside in `CONTAINER_HOME=/scratch/users/astar/ares/sailorhb/container` (`.sqsh`, model, `pydeps`, caches); the launchers find them through that variable. The copies in `CONTAINER_HOME` (old launchers, `.bak_*`) are superseded by the repo's.
+- **NSCC has no Apptainer**, so the image is the `.sqsh` converted on Orion. Rebuilding needs Apptainer elsewhere (`container/README.md`).
+- **pydeps** (`mosaicml-streaming` 0.13 and 4 helpers) is reinstalled in `CONTAINER_HOME/pydeps` from wheels downloaded on the login node: compute nodes cannot reach PyPI and the container gets no proxy.
+- **enroot data path:** the image is unpacked per job on the node's `/raid` (NSCC default, ~15 s). An unpack into shared scratch (`CONTAINER_HOME/enroot_data`, ~30 GB) was tried first and is not needed; it can be deleted.
+- **Data:** the same MDS tree is at `/data/projects/13003558/zoux/datasets/...`; `mixes/st_v0.yaml` and the tests point there. The launchers bind `/data/projects/13003558`.
+- **Launcher change:** `GLOO_SOCKET_IFNAME NCCL_IB_GID_INDEX NCCL_NET_GDR_LEVEL NCCL_CROSS_NIC NCCL_P2P_LEVEL TORCH_DISTRIBUTED_DEBUG` are forwarded into the container (needed for multi-node).
+- **Evidence (NSCC, H100 80 GB):**
+  - `train_omni.py sft` 10 steps + resume: 60.3 GiB peak, resume max |loss diff| 0.0069;
+  - `train_omni.py megatron` EP=1, 20 iterations + resume + 80 GB cap: 61.5 GiB peak, resume diff 0.0199 (H200 runs: 0.003 to 0.004; not investigated, step 11 matches exactly);
+  - `pbs/smoke_audio_lora_2gpu.pbs` via `qsub` (job 214221, 2 GPUs, 12 min): both trainers pass, 24/24 encoder `lora_B` trained, HF 61.7 GiB, Megatron EP=2 34.4 GiB;
+  - `tests/test_mosaic_stream.py`: 7/8 on a 1-GPU job; the 2-rank test needs two GPUs on the host (NCCL "Duplicate GPU").
+- **Not yet run:** `pbs/train_8gpu_both.pbs` (1 node x 8 GPUs) and `pbs/train_32gpu_4node.pbs` (4 nodes x 8 GPUs, launched with `pbsdsh`) wait for the dedicated queue; the launcher logic was dry-run and the one-node path run for real. Whether InfiniBand works inside the container is unchecked (the 4-node script measures it first).
+- **Bug B22:** `smoke_megatron_1gpu` resumed with `--no_save_optim true`, which the D17 guard rejects. Fixed in `slurm/` and `pbs/`.
 
 ---
 

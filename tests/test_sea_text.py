@@ -1,10 +1,7 @@
 """Parity and format tests for omni_mds.sea_text (PIPELINE_PLAN.md §6, phase 1).
 
-Runs inside the training container (needs zstandard, soundfile, jiwer, regex, more_itertools, librosa); CPU only,
-works on the login node, ~3 min:
-    cd toolkits/qwen3_omni_speechllm
-    apptainer exec --cleanenv -B /scratch --env PYTHONPATH=$PWD \
-        /scratch/prj0000000234/sailorhb/container/swift_megatron_cu128.sif python tests/test_sea_text.py
+Runs inside the training container (needs zstandard, soundfile, jiwer, regex, more_itertools, librosa); CPU only, ~3 min; run it in an interactive job, not on the login node:
+    source nscc/env.sh && $RUN python tests/test_sea_text.py
 The container has no pytest; the test_* functions are pytest-compatible if it is installed elsewhere.
 
 The parity test feeds the same real MDS rows and the same random seed to the old InstructDataCollator
@@ -27,8 +24,8 @@ from omni_mds.mds_io import iter_zstd_shard_head, list_subdirs, load_index  # no
 from omni_mds.mix import load_mix  # noqa: E402
 from omni_mds.sea_text import AUDIO_TAG, RowConfig, build_row, resolve_languages  # noqa: E402
 
-OLD_MODULES = '/scratch/prj0000000234/sailorhb/toolkits/multimodal_trainer/modules'
-BASE = '/scratch/prj0000000234/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal'
+OLD_MODULES = '/scratch/users/astar/ares/sailorhb/git_repos/multimodal_trainer/modules'
+BASE = '/data/projects/13003558/zoux/datasets/datasets_mosaic_stage_AudioLLM_v2.1/datasets_multimodal'
 ST_MIX = os.path.join(ROOT, 'mixes', 'st_v0.yaml')
 ROWS_PER_DATASET = int(os.environ.get('ROWS_PER_DATASET', 50))
 

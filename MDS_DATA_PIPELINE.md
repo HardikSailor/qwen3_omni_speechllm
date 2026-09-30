@@ -1,5 +1,7 @@
 # Using our Mosaic (MDS) speech datasets with ms-swift / Megatron-SWIFT for Qwen3-Omni
 
+> **Cluster note (2026-09-30):** this document was written on the previous cluster (Orion: Slurm, H200, Apptainer). The project now runs on NSCC (PBS, H100, enroot). Map the old paths with the *Paths* section of `README.md`; the container is described in `container/README.md`. Job numbers (e.g. 150431) are Orion Slurm jobs.
+
 Written 2026-09-24. Sources studied:
 - `toolkits/multimodal_trainer/modules`: the old MERaLiON pipeline (datasets, collators, normalisers, metrics);
 - `toolkits/ms-swift` @ 8ec0455: the same commit as inside the container;

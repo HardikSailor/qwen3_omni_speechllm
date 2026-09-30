@@ -1,0 +1,39 @@
+Bootstrap: localimage
+From: /tmp/sailorhb_apptainer/out/swift_base_cu128.sif
+# Base = docker://modelscope-registry.us-west-1.cr.aliyuncs.com/modelscope-repo/modelscope:
+#        ubuntu22.04-cuda12.8.1-py311-torch2.10.0-vllm0.17.1-modelscope1.34.0-swift4.0.3
+# Adds: ms-swift 4.6.0.dev0 (toolkits/ms-swift @ 8ec0455), megatron-core 0.16.1, mcore-bridge 1.6.4, datasets 4.8.4.
+# Build: see build_container.sh
+
+%files
+    /tmp/sailorhb_apptainer/src/ms-swift /opt/ms-swift
+
+%post
+    set -e
+    export PIP_NO_CACHE_DIR=1 PYTHONNOUSERSITE=1
+    # Keep the base image's CUDA stack exactly as shipped.
+    cat > /opt/constraints.txt <<'EOF'
+torch==2.10.0
+transformer_engine==2.13.0
+transformers==5.2.0
+vllm==0.17.1
+flash_attn==2.8.3
+apex==0.1
+EOF
+    pip install -c /opt/constraints.txt \
+        "megatron-core==0.16.1" "mcore-bridge==1.6.4" "datasets==4.8.4" \
+        "peft>=0.11,<0.21" "trl>=0.15,<1.0" "qwen-omni-utils>=0.0.9" jiwer
+    pip install -c /opt/constraints.txt --no-deps /opt/ms-swift
+    pip check || true
+    python -c "import swift, megatron.core, mcore_bridge; print('swift', swift.__version__, 'mcore', megatron.core.__version__)"
+
+%environment
+    export PYTHONNOUSERSITE=1
+
+%labels
+    Maintainer sailorhb
+    Purpose Qwen3-Omni fine-tuning (swift sft, Megatron-SWIFT) and vLLM inference
+
+%help
+    Qwen3-Omni training container: ms-swift 4.6.0.dev0 + Megatron-SWIFT (megatron-core 0.16.1, TE 2.13,
+    mcore-bridge 1.6.4), torch 2.10 / CUDA 12.8, vLLM 0.17.1. Launch through run_container.sh.
