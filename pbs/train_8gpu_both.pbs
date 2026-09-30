@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N omni_8gpu
 #PBS -l select=1:ngpus=8:ncpus=112:mem=1880GB
-#PBS -l walltime=03:00:00
+#PBS -l walltime=03:30:00
 #PBS -q normal
 #PBS -P 13003558
 #PBS -j oe
@@ -14,6 +14,8 @@
 #   M8A  train_omni.py megatron EP=8: LoRA r16 on attention (linear_qkv, linear_proj), micro-batch 1, global 32,
 #        60 iterations, eval + resumable checkpoint at 30/60
 #   M8B  resume M8A iteration 30 with optimizer (--no_save_optim false, see §10.4) -> 60
+#   F8A  exploratory: the HF trainer with `--fsdp fsdp2` (ms-swift preset), 30 steps, to see whether FSDP2 works with train_omni.py
+#        and how its memory / speed compare with H8A. Runs last; it never affects the other phases.
 # H8A and M8A log the sample ids each rank reads (OMNI_LOG_SAMPLE_IDS) -> tests/check_partitions.py
 # Summary: outputs/train_8gpu/summary.txt
 set -u
@@ -59,12 +61,21 @@ echo "=== M8B (resume with optimizer) $(date)"
 [ -n "$CK" ] && { MASTER_PORT=29574 $RUN python train_omni.py megatron "${MEG[@]}" --mcore_adapter $CK --finetune false \
     --no_load_optim false --no_load_rng false --output_dir $O/M8B > $O/M8B.log 2>&1; echo "M8B exit=$?"; }
 
+echo "=== F8A (FSDP2, exploratory; a failure here is a result, not a script error) $(date)"
+# ms-swift's FSDP2 preset (swift/config/fsdp2.json): full_shard, native activation checkpointing (so no --gradient_checkpointing).
+# Later flags override the ones in HF=(...). Untested before this run: train_omni.py's own dataloaders and checkpoint saving under FSDP.
+OMNI_LOG_SAMPLE_IDS=$O/ids_F8A MASTER_PORT=29575 $RUN python train_omni.py sft "${HF[@]}" --fsdp fsdp2 --gradient_checkpointing false \
+    --max_steps 30 --save_steps 30 --eval_steps 30 --output_dir $O/F8A > $O/F8A.log 2>&1; echo "F8A exit=$?"
+grep -aE "Error|error:|Traceback" $O/F8A.log | sort | uniq -c | sort -rn | head -5
+
 echo "end $(date)"
 {
   echo "## HF DDP (swift sft)";  $RUN python tests/summarize_smoke.py $O H8A H8B H8A
   echo; echo "partitions H8A:";  $RUN python tests/check_partitions.py $O/ids_H8A
   echo; echo "## Megatron EP=8";  $RUN python tests/summarize_smoke.py $O M8A M8B M8A
   echo; echo "partitions M8A:";  $RUN python tests/check_partitions.py $O/ids_M8A
+  echo; echo "## FSDP2 (exploratory, 30 steps; compare memory / s-per-step with H8A)";  $RUN python tests/summarize_smoke.py $O F8A F8A F8A
+  echo "partitions F8A:";  $RUN python tests/check_partitions.py $O/ids_F8A
 } 2>&1 | grep -v "pynvml\|FutureWarning" > $O/summary.txt
 cat $O/summary.txt
 du -sh $O

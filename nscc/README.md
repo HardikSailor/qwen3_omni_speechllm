@@ -24,7 +24,7 @@ if `qsub` refuses, ask NSCC to add the account.)
 
 | Test | Command | Walltime | What it does |
 |---|---|---|---|
-| 1 node x 8 GPUs | `qsub -q dedicated pbs/train_8gpu_both.pbs` | 3 h | HF DDP and Megatron EP=8, 60 steps each, resume from step 30, disjoint-partition check. Summary: `outputs/train_8gpu/summary.txt` |
+| 1 node x 8 GPUs | `qsub -q dedicated pbs/train_8gpu_both.pbs` | 3.5 h | HF DDP and Megatron EP=8, 60 steps each, resume from step 30, disjoint-partition check; then an exploratory FSDP2 run (`--fsdp fsdp2`, 30 steps, phase `F8A`, last). Summary: `outputs/train_8gpu/summary.txt` |
 | 4 nodes x 8 GPUs | `qsub -q dedicated pbs/train_32gpu_4node.pbs` | 4 h | NCCL bandwidth check, then the same two trainers on 32 GPUs (global batch 32, EP=8 inside each node). Summary: `outputs/train_32gpu/summary.txt` |
 
 Multi-node design: the job script runs on the first node; `pbsdsh` starts `nscc/node_run.sh` on every node, which turns the node list
