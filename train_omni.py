@@ -2,6 +2,7 @@
 
     python train_omni.py sft      --mix mixes/st_v0.yaml [omni options] <ordinary `swift sft` arguments>
     python train_omni.py megatron --mix mixes/st_v0.yaml [omni options] <ordinary `megatron sft` arguments>
+    python train_omni.py sft --config configs/lora_ddp.yaml [flags that replace the file's values]
 With NPROC_PER_NODE set it re-launches itself under torchrun, like the swift / megatron CLIs.
 
 Inside the container (PIPELINE_PLAN.md §3.2, §10):
@@ -74,6 +75,63 @@ def parse_omni_args(argv):
     return p.parse_known_args(argv)
 
 
+def expand_config(argv):
+    """`--config run.yaml` -> the flags it lists, placed before the command-line ones.
+
+    The YAML maps flag names (without `--`) to values; both our options (mix, val_choose, audio_lora_layers, ...) and any
+    `swift sft` / `megatron sft` argument are allowed. Values: lists become several tokens, booleans `true`/`false`,
+    dicts JSON, `null` drops the key; `$VAR` / `${VAR}` are expanded from the environment (e.g. `model: ${MODEL}`).
+    `target_modules_file: <file>` reads the names for --target_modules from a file (relative to this repo).
+    A flag given on the command line replaces the config's value for that flag (the config entry is dropped, not merged)."""
+    idx = [i for i, x in enumerate(argv) if x == '--config' or x.startswith('--config=')]
+    if not idx:
+        return argv
+    if len(idx) > 1:
+        sys.exit('train_omni.py: give --config once')
+    i = idx[0]
+    if argv[i] == '--config':
+        if i + 1 >= len(argv):
+            sys.exit('train_omni.py: --config needs a file')
+        path, argv = argv[i + 1], argv[:i] + argv[i + 2:]
+    else:
+        path, argv = argv[i].split('=', 1)[1], argv[:i] + argv[i + 1:]
+    import yaml
+    with open(path, encoding='utf-8') as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        sys.exit(f'train_omni.py: {path} must be a mapping of flag: value')
+    if 'target_modules_file' in cfg:
+        if 'target_modules' in cfg:
+            sys.exit(f'train_omni.py: {path} has both target_modules and target_modules_file')
+        f = os.path.expandvars(str(cfg.pop('target_modules_file')))
+        f = f if os.path.isabs(f) else os.path.join(HERE, f)
+        with open(f, encoding='utf-8') as fh:
+            cfg['target_modules'] = fh.read().split()
+
+    def tokens(key, v):
+        if isinstance(v, bool):
+            return ['true' if v else 'false']
+        if isinstance(v, (list, tuple)):
+            return [t for x in v for t in tokens(key, x)]
+        if isinstance(v, dict):
+            return [json.dumps(v)]
+        s = os.path.expandvars(str(v))
+        if '$' in s:
+            sys.exit(f'train_omni.py: {path}: {key}: unset environment variable in {v!r}')
+        return [s]
+
+    on_cli = {x[2:].split('=')[0] for x in argv if x.startswith('--')}
+    out, replaced = [], []
+    for key, v in cfg.items():
+        if key in on_cli:
+            replaced.append(key)
+        elif v is not None:
+            out += [f'--{key}'] + tokens(key, v)
+    print(f'[train_omni] config {path}: {len(cfg)} settings'
+          + (f'; replaced on the command line: {" ".join(replaced)}' if replaced else ''), flush=True)
+    return out + argv
+
+
 def _bool(v):
     if isinstance(v, bool):
         return v
@@ -108,6 +166,70 @@ def encode_row(template, row):
     return template.encode(row, return_length=True)
 
 
+# ------------------------------------------------------------------------------------------------ effective settings
+
+EFFECTIVE_FILE = 'omni_effective.json'
+
+
+def _by_adapter(module, attr, adapter, default=None):
+    """module.<attr>[adapter] for dicts and nn.ModuleDict (PEFT keeps lora_dropout in a ModuleDict)."""
+    d = getattr(module, attr, None)
+    try:
+        return d[adapter] if d is not None and adapter in d else default
+    except TypeError:
+        return default
+
+
+def lora_summary(models):
+    """What the LoRA layers in the live model(s) hold: rank, alpha, scaling, dropout, how many and where."""
+    import collections
+    ranks, alphas, scalings, dropouts = (collections.Counter() for _ in range(4))
+    names, n_train, n_total = [], 0, 0
+    for model in models:
+        for name, m in model.named_modules():
+            r = getattr(m, 'r', None)
+            if isinstance(r, dict) and r and hasattr(m, 'lora_A'):
+                names.append(name)
+                for adapter, rank in r.items():
+                    ranks[rank] += 1
+                    alphas[_by_adapter(m, 'lora_alpha', adapter)] += 1
+                    scalings[round(float(_by_adapter(m, 'scaling', adapter, float('nan'))), 6)] += 1
+                    dropouts[getattr(_by_adapter(m, 'lora_dropout', adapter), 'p', 0.0)] += 1   # nn.Identity: 0
+        for p in model.parameters():
+            n_total += p.numel()
+            n_train += p.numel() if p.requires_grad else 0
+    audio = [n for n in names if 'audio_tower' in n]
+    return {'lora_modules': len(names), 'rank': dict(ranks), 'alpha': dict(alphas), 'scaling': dict(scalings),
+            'dropout': dict(dropouts), 'audio_encoder_lora_modules': len(audio),
+            'audio_encoder_lora_layers': sorted({int(n.split('audio_tower.layers.')[1].split('.')[0])
+                                                 for n in audio if 'audio_tower.layers.' in n}),
+            'examples': names[:3], 'trainable_params_this_rank': n_train, 'total_params_this_rank': n_total}
+
+
+def group_summary(param_groups, keys):
+    """Optimizer param groups -> the settings that differ between them, with how many params each group holds."""
+    out = []
+    for g in param_groups:
+        e = {k: (list(g[k]) if isinstance(g[k], tuple) else g[k]) for k in keys if k in g}
+        e['num_tensors'] = len(g['params'])
+        e['num_params'] = sum(p.numel() for p in g['params'])
+        out.append(e)
+    return out
+
+
+def write_effective(output_dir, info):
+    """Rank 0 writes what the trainer actually built (optimizer, scheduler, LoRA, batch) to <output_dir>/omni_effective.json,
+    read back from the live objects, not from the arguments. tests/check_effective_args.py compares it with a config."""
+    import torch.distributed as dist
+    if dist.is_initialized() and dist.get_rank() != 0:
+        return
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, EFFECTIVE_FILE)
+    with open(path, 'w') as f:
+        json.dump(info, f, indent=1, default=str)
+    print(f'[train_omni] effective settings -> {path}', flush=True)
+
+
 # ------------------------------------------------------------------------------------------------ trainer
 
 def make_streaming_trainer_cls(base, fix_adapter_config=False):
@@ -117,9 +239,41 @@ def make_streaming_trainer_cls(base, fix_adapter_config=False):
     from omni_mds.mosaic_stream import OmniStreamingDataset, make_dataloader
     logger = get_logger()
 
+    from transformers import TrainerCallback
+
+    class EffectiveSettingsCallback(TrainerCallback):
+        """At train start (optimizer and scheduler exist): record what the HF trainer really uses."""
+
+        def __init__(self, trainer):
+            self.trainer = trainer
+
+        def on_train_begin(self, args, state, control, model=None, optimizer=None, lr_scheduler=None, **kwargs):
+            t = self.trainer
+            world = t.accelerator.num_processes if getattr(t, 'accelerator', None) else 1
+            write_effective(args.output_dir, {
+                'trainer': 'swift sft (HF)',
+                'optimizer_class': type(getattr(optimizer, 'optimizer', optimizer)).__name__,
+                'optimizer_param_groups': group_summary(
+                    optimizer.param_groups, ('initial_lr', 'lr', 'weight_decay', 'betas', 'eps')),
+                'scheduler_class': type(lr_scheduler).__name__,
+                'lr_scheduler_type': str(args.lr_scheduler_type),
+                'warmup_steps': args.get_warmup_steps(state.max_steps), 'max_steps': state.max_steps,
+                'max_grad_norm': args.max_grad_norm,
+                'world_size': world, 'per_device_train_batch_size': args.per_device_train_batch_size,
+                'gradient_accumulation_steps': args.gradient_accumulation_steps,
+                'global_batch_size': args.per_device_train_batch_size * args.gradient_accumulation_steps * world,
+                'gradient_checkpointing': bool(getattr(model, 'is_gradient_checkpointing', args.gradient_checkpointing)),
+                'seed': args.seed, 'data_seed': args.data_seed,
+                'lora': lora_summary([model]),
+            })
+
     class OmniStreamingTrainer(base):
         _omni_train_dl = None
         _omni_eval_dls = None
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.add_callback(EffectiveSettingsCallback(self))
 
         def _omni_loader(self, dataset, batch_size, persistent):
             a = self.args
@@ -277,6 +431,34 @@ def make_omni_megatron_trainer_cls(base, fix_adapter_config=False):
 
     class OmniMegatronTrainer(base):
         _omni_train_dl = None
+
+        def get_optimizer_and_scheduler(self):
+            optimizer, sched = super().get_optimizer_and_scheduler()
+            a = self.args
+            opts = getattr(optimizer, 'chained_optimizers', [optimizer])
+            cfg = getattr(opts[0], 'config', None)
+            write_effective(a.output_dir, {
+                'trainer': 'megatron sft (Megatron-SWIFT)',
+                'optimizer_class': [type(o).__name__ for o in opts],
+                'optimizer_config': {k: getattr(cfg, k, None) for k in (
+                    'optimizer', 'lr', 'min_lr', 'weight_decay', 'adam_beta1', 'adam_beta2', 'adam_eps',
+                    'clip_grad', 'bf16', 'use_distributed_optimizer')},
+                'optimizer_param_groups': group_summary(
+                    optimizer.param_groups, ('max_lr', 'min_lr', 'lr', 'weight_decay', 'wd_mult', 'lr_mult',
+                                             'is_decoupled_lr')),
+                'scheduler': {k: getattr(sched, k, None) for k in (
+                    'max_lr', 'min_lr', 'lr_warmup_steps', 'lr_decay_steps', 'lr_decay_style',
+                    'start_wd', 'end_wd', 'wd_incr_style')},
+                'train_iters': a.train_iters, 'micro_batch_size': a.micro_batch_size,
+                'global_batch_size': a.global_batch_size,
+                'data_parallel_size': mpu.get_data_parallel_world_size(),
+                'expert_model_parallel_size': mpu.get_expert_model_parallel_world_size(),
+                'tensor_model_parallel_size': mpu.get_tensor_model_parallel_world_size(),
+                'pipeline_model_parallel_size': mpu.get_pipeline_model_parallel_world_size(),
+                'recompute_granularity': a.recompute_granularity, 'seed': a.seed,
+                'lora': lora_summary(self.wrapped_models),
+            })
+            return optimizer, sched
 
         def _omni_loader(self, dataset):
             a = self.args
@@ -560,6 +742,7 @@ def main(argv=None):
     if mode == 'megatron':
         os.environ.setdefault('CUDA_DEVICE_MAX_CONNECTIONS', '1')   # as `megatron sft` does
     maybe_relaunch_with_torchrun(argv)
+    rest = expand_config(rest)
     omni, swift_argv = parse_omni_args(rest)
     if omni.clean_stale_shm:
         from omni_mds.mosaic_stream import clean_stale_shared_memory

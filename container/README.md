@@ -83,7 +83,7 @@ Run this on a GPU node (an interactive PBS job or `qsub`), not on the login node
 What the launcher does:
 - Starts the image with a clean environment (`enroot start`, or `apptainer exec --cleanenv`) and a clean home on node-local `/tmp/$USER/container_home`, so `~/.local` and `~/.bashrc` never leak in.
 - Sets `PYTHONNOUSERSITE=1`, `HF_HOME`, `HF_HUB_OFFLINE=1`, `ENABLE_AUDIO_OUTPUT=0` (talker not loaded), `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `NLTK_DATA`, `MODELSCOPE_CACHE`.
-- Forwards only these host variables: `CUDA_VISIBLE_DEVICES NPROC_PER_NODE NNODES NODE_RANK MASTER_ADDR MASTER_PORT`, NCCL / GLOO ones (`NCCL_DEBUG NCCL_SOCKET_IFNAME NCCL_IB_HCA NCCL_IB_DISABLE NCCL_IB_GID_INDEX NCCL_NET_GDR_LEVEL NCCL_CROSS_NIC NCCL_P2P_LEVEL GLOO_SOCKET_IFNAME`), `PYTHONPATH`, `WANDB_*`, and our `OMNI_*` variables. Anything else you export on the host is **not** visible inside.
+- Forwards only these host variables: `CUDA_VISIBLE_DEVICES NPROC_PER_NODE NNODES NODE_RANK MASTER_ADDR MASTER_PORT`, NCCL / GLOO ones (`NCCL_DEBUG NCCL_SOCKET_IFNAME NCCL_IB_HCA NCCL_IB_DISABLE NCCL_IB_GID_INDEX NCCL_NET_GDR_LEVEL NCCL_CROSS_NIC NCCL_P2P_LEVEL GLOO_SOCKET_IFNAME`), `PYTHONPATH`, `MODEL`, `MIX` (so a config can say `model: ${MODEL}`), `WANDB_*`, and our `OMNI_*` variables. Anything else you export on the host is **not** visible inside.
 - Mounts `/scratch`, `/data/projects/13003558` and `/tmp` (host `/tmp`, because enroot's default `/tmp` is RAM). Add more with `EXTRA_BINDS=/a,/b:/c`.
 - Overridable: `CONTAINER_HOME`, `SQSH` / `SIF`, `HF_MODELS`, `SHARED_CACHE`, `CONTAINER_RUNTIME=enroot|apptainer`.
 

@@ -26,23 +26,9 @@ export NPROC_PER_NODE=8 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 mkdir -p $O; cd $P
 echo "node $(hostname)  start $(date)"; nvidia-smi -L; df -h /tmp | tail -1
 
-HF=(--mix $MIX --val_choose 32
-    --model "$MODEL" --model_type qwen3_omni_moe --experts_impl grouped_mm
-    --tuner_type lora --target_modules $(cat lora_targets_thinker_attn_audio_proj.txt) --lora_rank 16 --lora_alpha 32
-    --torch_dtype bfloat16 --attn_impl flash_attn --padding_free true
-    --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4
-    --learning_rate 1e-4 --warmup_ratio 0.05 --gradient_checkpointing true --max_length 2048
-    --logging_steps 1 --dataloader_num_workers 4 --report_to none --data_seed 42 --seed 42
-    --save_only_model false --save_total_limit 2 --max_steps 60 --save_steps 30 --eval_steps 30)
-MEG=(--mix $MIX --val_choose 32
-    --model "$MODEL" --model_type qwen3_omni_moe
-    --tuner_type lora --lora_rank 16 --lora_alpha 32 --target_modules linear_qkv linear_proj
-    --freeze_llm false --freeze_vit true --freeze_aligner true
-    --expert_model_parallel_size 8 --moe_grouped_gemm true --moe_permute_fusion true --moe_aux_loss_coeff 1e-3
-    --micro_batch_size 1 --global_batch_size 32 --lr 1e-4 --min_lr 1e-5 --lr_warmup_fraction 0.05
-    --recompute_granularity selective --cross_entropy_loss_fusion true --max_length 2048 --attention_backend flash
-    --merge_lora false --save_total_limit 2 --no_save_optim false --logging_steps 1 --dataloader_num_workers 4
-    --data_seed 42 --seed 42 --train_iters 60 --save_steps 30 --eval_steps 30)
+# Training settings: the recipe in configs/ (--config); only this script's differences are listed. Later flags replace earlier ones.
+HF=(--config $P/configs/lora_ddp.yaml)
+MEG=(--config $P/configs/lora_megatron.yaml)
 
 echo "=== H8A $(date)"
 OMNI_LOG_SAMPLE_IDS=$O/ids_H8A MASTER_PORT=29571 $RUN python train_omni.py sft "${HF[@]}" --output_dir $O/H8A \

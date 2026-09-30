@@ -115,13 +115,29 @@ $RUN python train_omni.py megatron \
     --train_iters 1000 --save_steps 200 --eval_steps 200 --finetune true --output_dir outputs/my_meg_run
 ```
 
-**Job scripts:** `qsub pbs/<name>.pbs` (add `-q dedicated` for the dedicated queue). `train_4gpu_both.pbs`, `train_8gpu_both.pbs` (one node) and `train_32gpu_4node.pbs` (4 nodes x 8 GPUs) run both trainers with resume checks. Details: `nscc/README.md`.
+**Job scripts:** `qsub pbs/<name>.pbs` (add `-q dedicated` for the dedicated queue). `train_4gpu_both.pbs`, `train_8gpu_both.pbs` (one node) and `train_32gpu_4node.pbs` (4 nodes x 8 GPUs) run both trainers with resume checks. Details: `nscc/README.md`. The scripts take their training settings from `configs/` and list only their own differences.
 
 **Resume:**
 - HF: `--resume_from_checkpoint <ckpt>`.
 - Megatron: `--mcore_adapter <ckpt> --finetune false`, and save with `--no_save_optim false` if you want the optimizer state back (D17).
 
 ## Training options
+
+**Recipe files.** Settings can live in a YAML file: `configs/lora_ddp.yaml` (HF trainer) and `configs/lora_megatron.yaml`
+(Megatron) hold the full LoRA recipe, with learning rate, weight decay, LoRA rank / alpha / dropout, batch, schedule and the
+ms-swift defaults written out. Copy one per experiment and pass it with `--config`; a flag on the command line replaces
+the value in the file:
+```bash
+$RUN python train_omni.py sft --config configs/lora_ddp.yaml --output_dir outputs/my_run
+NPROC_PER_NODE=8 $RUN python train_omni.py megatron --config configs/lora_megatron.yaml --finetune true --output_dir outputs/my_meg_run
+```
+- Keys are flag names without `--`: any `swift sft` / `megatron sft` argument plus the options below. The two trainers name
+  some settings differently (`learning_rate` vs `lr`, `max_steps` vs `train_iters`, `max_grad_norm` vs `clip_grad`, ...).
+- Lists become several values, `true`/`false` booleans, `null` drops a key, `${VAR}` comes from the environment
+  (`model: ${MODEL}`, set by `nscc/env.sh`), `target_modules_file:` reads the LoRA targets from a file.
+- **What was actually used:** every run writes `args.json` (ms-swift's final arguments) and `omni_effective.json` (read back
+  from the live optimizer, scheduler and LoRA layers). `python tests/check_effective_args.py <config> <run>/v0-...` compares all
+  three per key. The audit `nscc/audit_config_1gpu.sh` (2026-09-30) ran both trainers with non-default values: all matched.
 
 `train_omni.py` accepts every `swift sft` / `megatron sft` argument, plus these:
 
@@ -158,6 +174,7 @@ omni_mds/                     data layer
   sea_text.py                   build_row: prompts and targets per task (exact port of the old collators)
   mds_io.py, audio/             MDS decoding, audio loading and augmentation
   instructions_lib/, text_normalizers/, metrics/   copied from multimodal_trainer (see VENDORED.md)
+configs/                      training recipes (YAML) for --config: lora_ddp.yaml, lora_megatron.yaml
 mixes/st_v0.yaml              ST-only pilot mix (8 train + 6 test CoVoST2 / GigaSpeech / People's Speech sets)
 lora_targets_thinker_attn_audio_proj.txt   explicit LoRA targets: 48 thinker attention layers + audio proj1/proj2
 pbs/                          PBS job scripts for NSCC: smoke tests, 4/8-GPU runs, 4-node x 8-GPU run, Megatron resume debugging

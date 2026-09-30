@@ -21,14 +21,8 @@ export NPROC_PER_NODE=1 CUDA_VISIBLE_DEVICES=0
 cd $P
 echo "node $(hostname)  start $(date)"; nvidia-smi -L; df -h /tmp | tail -1
 
-COMMON=(--mix $MIX --val_choose 32
-    --model "$MODEL" --model_type qwen3_omni_moe
-    --tuner_type lora --target_modules $(cat lora_targets_thinker_attn_audio_proj.txt) --lora_rank 16 --lora_alpha 32
-    --torch_dtype bfloat16 --attn_impl flash_attn --padding_free true
-    --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4
-    --learning_rate 1e-4 --warmup_ratio 0.05 --gradient_checkpointing true --max_length 2048
-    --logging_steps 1 --dataloader_num_workers 4 --report_to none --data_seed 42 --seed 42
-    --save_only_model false --save_total_limit 3)
+# Training settings: the recipe in configs/ (--config); only this script's differences are listed. Later flags replace earlier ones.
+COMMON=(--config $P/configs/lora_ddp.yaml --save_total_limit 3)
 
 echo "=== A $(date)"
 $RUN python train_omni.py sft "${COMMON[@]}" --max_steps 40 --save_steps 20 --eval_steps 20 \

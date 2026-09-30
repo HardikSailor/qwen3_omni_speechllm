@@ -1,0 +1,64 @@
+# Megatron-SWIFT (megatron sft, expert parallel): LoRA r16 on thinker attention (linear_qkv, linear_proj).
+# Same recipe as pbs/train_8gpu_both.pbs (M8A). Use (NPROC_PER_NODE must be set, even =1):
+#   $RUN python train_omni.py megatron --config configs/lora_megatron.yaml --finetune true --output_dir outputs/<run>
+# A flag given on the command line replaces the value here. Keys are ordinary `megatron sft` flags (without --)
+# plus train_omni.py's own (mix, val_choose, audio_lora_*). Note the Megatron names differ from swift sft:
+# lr / min_lr / lr_warmup_fraction / lr_decay_style / clip_grad / micro_batch_size / global_batch_size / train_iters.
+# Values marked "default" are ms-swift's defaults, written out so the recipe is complete.
+
+# --- data
+mix: mixes/st_v0.yaml
+val_choose: 32
+max_length: 2048
+dataloader_num_workers: 4
+data_seed: 42
+
+# --- model
+model: ${MODEL}
+model_type: qwen3_omni_moe
+attention_backend: flash
+freeze_llm: false                   # LoRA on the LLM; base weights stay frozen
+freeze_vit: true                    # audio/vision encoders frozen (audio_lora_layers adds encoder LoRA anyway)
+freeze_aligner: true
+
+# --- parallelism: EP only. TP / PP / CP must stay 1 (the data reader partitions by global rank)
+expert_model_parallel_size: 8       # experts split over the 8 GPUs of a node
+moe_grouped_gemm: true
+moe_permute_fusion: true
+moe_aux_loss_coeff: 1.0e-3
+recompute_granularity: selective
+cross_entropy_loss_fusion: true
+
+# --- LoRA
+tuner_type: lora
+target_modules: [linear_qkv, linear_proj]
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05                  # default
+audio_lora_layers: none
+audio_lora_modules: attn
+
+# --- optimisation
+optimizer: adam                     # default (AdamW-style, with weight decay)
+lr: 1.0e-4
+min_lr: 1.0e-5
+lr_decay_style: cosine              # default
+lr_warmup_fraction: 0.05
+weight_decay: 0.1                   # default
+adam_beta1: 0.9                     # default
+adam_beta2: 0.95                    # default
+clip_grad: 1.0                      # default
+seed: 42
+
+# --- batch: global_batch_size is fixed; gradient accumulation = global / (micro x data-parallel ranks) is derived
+micro_batch_size: 1
+global_batch_size: 32
+
+# --- schedule, saving, logging
+train_iters: 60
+save_steps: 30
+eval_steps: 30
+save_total_limit: 2                 # must be >= 2 for Megatron
+merge_lora: false                   # never write a 66 GB merged copy per checkpoint
+no_save_optim: false                # keep optimizer state (needed to resume with --no_load_optim false, D17)
+logging_steps: 1

@@ -177,3 +177,24 @@
 - Added phase `F8A` (HF trainer, `--fsdp fsdp2`, 30 steps) as the last phase of `pbs/train_8gpu_both.pbs`; walltime 3.5 h. Untested: `train_omni.py`'s custom dataloaders and checkpoint saving under FSDP2. Commit `eb1768a`.
 - LoRA-only guidance: DDP (~62 GiB/GPU) is the simplest for attention / audio-projector LoRA; Megatron EP (~17 GiB/GPU) when memory or expert LoRA forces it. Both trainers are ready and tested for attention and audio-encoder LoRA; expert LoRA has no script or target list yet.
 
+**2026-09-30 (later): YAML recipe files (`--config`) and an audit of what the trainers really use**
+- `train_omni.py --config <yaml>`: flag: value pairs for both trainers; command-line flags replace the file's values.
+  Recipes: `configs/lora_ddp.yaml`, `configs/lora_megatron.yaml` (= the H8A / M8A settings of `pbs/train_8gpu_both.pbs`,
+  with ms-swift defaults written out: weight decay 0.1, beta2 0.95, LoRA dropout 0.05, cosine, grad clip 1.0).
+- Each run now writes `omni_effective.json`: optimizer groups, scheduler, LoRA rank/alpha/scaling/dropout per module, batch,
+  parallel sizes, read from the live objects. `tests/check_effective_args.py` compares config / `args.json` / runtime per key.
+- **Audit** (`nscc/audit_config_1gpu.sh`, job 214383, 1 H100): configs with non-default values (lr 2e-4, weight decay 0.05,
+  rank 8, alpha 16, dropout 0.1, beta2 0.98, warmup 0.25, clip 0.5, linear schedule, audio LoRA top2) -> **both trainers PASS**,
+  every key equal in all three layers; saved adapters r 8 / alpha 16 / dropout 0.1.
+  - What `train_omni.py` changes on purpose: adds the audio-encoder names to `target_modules` (+8), sets the dataset
+    placeholders, adds `save_total_limit 3` / `merge_lora false` only when not given.
+  - Weight decay: both trainers put all LoRA tensors in one group with the configured decay (no bias/norm group, since only LoRA trains).
+- Fixes found on the way: the launcher did not forward `MODEL` / `MIX` into the container (added); first audit try crashed in my new
+  LoRA summary (`lora_dropout` is a `ModuleDict`), fixed and re-run.
+- `tests/test_config.py` (CPU): expansion rules, and that both configs give exactly the flags of `pbs/train_8gpu_both.pbs`.
+- **`pbs/` scripts switched to `--config`** (user asked): each array is now `--config configs/lora_*.yaml` plus only that
+  script's differences (GPU count / EP size, batch, eval size, audio LoRA, steps). Checked against the old explicit arrays:
+  identical flags, except ms-swift defaults now written out, and `experts_impl grouped_mm` added to `smoke_1gpu.pbs`
+  (the only script that lacked it; speed only). `debug_megatron_optim_resume.pbs` is unchanged: it also runs plain
+  `megatron sft`, which cannot read our train_omni-only keys. `tests/test_config.py` pins every script's differences.
+

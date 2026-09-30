@@ -1,0 +1,56 @@
+# HF trainer (swift sft, DDP): LoRA r16 on thinker attention + audio proj1/proj2.
+# Same recipe as pbs/train_8gpu_both.pbs (H8A). Use:
+#   $RUN python train_omni.py sft --config configs/lora_ddp.yaml --output_dir outputs/<run>
+# A flag given on the command line replaces the value here. Keys are ordinary `swift sft` flags (without --)
+# plus train_omni.py's own (mix, val_choose, audio_lora_*; README "Training options"). ${VAR} comes from nscc/env.sh.
+# Values marked "default" are ms-swift's defaults, written out so the recipe is complete; see container/README.md
+# for the pinned ms-swift version they come from.
+
+# --- data
+mix: mixes/st_v0.yaml
+val_choose: 32                      # validation samples per dataset (short evals)
+max_length: 2048                    # tokens; audio costs ~13 tokens/s
+padding_free: true
+dataloader_num_workers: 4
+data_seed: 42
+
+# --- model
+model: ${MODEL}
+model_type: qwen3_omni_moe
+experts_impl: grouped_mm
+torch_dtype: bfloat16
+attn_impl: flash_attn
+
+# --- LoRA
+tuner_type: lora
+target_modules_file: lora_targets_thinker_attn_audio_proj.txt   # 194 explicit modules; never all-linear / regex (B1)
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05                  # default
+audio_lora_layers: none             # LoRA inside the audio encoder: all | top<K> | bottom<K> | a-b
+audio_lora_modules: attn            # attn | mlp | attn_mlp (used only if audio_lora_layers is set)
+
+# --- optimisation
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine           # default
+warmup_ratio: 0.05
+weight_decay: 0.1                   # default
+adam_beta2: 0.95                    # default (beta1 0.9)
+max_grad_norm: 1.0                  # default
+seed: 42
+
+# --- batch: global batch = per_device_train_batch_size x gradient_accumulation_steps x GPUs
+#     8 GPUs: 1 x 4 x 8 = 32. For 4 GPUs use 8, for 32 GPUs use 1, to keep 32.
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 4
+gradient_checkpointing: true
+
+# --- schedule, saving, logging
+max_steps: 60
+save_steps: 30
+eval_steps: 30
+save_total_limit: 2
+save_only_model: false              # keep optimizer state, so a run can resume exactly
+logging_steps: 1
+report_to: none

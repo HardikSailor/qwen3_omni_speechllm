@@ -6,9 +6,13 @@ Paths, what the container holds, and how to recreate `pydeps`: `../container/REA
 - `env.sh`: `source nscc/env.sh` sets `P` (repo), `C`/`CONTAINER_HOME`, `MODEL`, `MIX` (`mixes/st_v0.yaml`, already pointing at NSCC's data),
   `RUN` (= `container/run_container.sh`) and `PYTHONPATH` (repo + `container/pydeps`). Every `pbs/*.pbs` script sources it.
 - `smoke_1gpu_h100.sh`: 10-step HF LoRA + resume check, run by hand inside an interactive job.
+- `audit_config_1gpu.sh`: checks that both trainers use what a `--config` YAML says (non-default values, 4 steps each, ~20 min);
+  summary in `outputs/config_audit/summary.txt`.
 - `node_run.sh`, `nccl_check.py`: the per-node launcher and the NCCL bandwidth check used by the multi-node job (below).
 - `../pbs/*.pbs`: the job scripts. `qsub pbs/<name>.pbs`, or run the body in an interactive job with `bash pbs/<name>.pbs`.
   Headers use `-q normal -P 13003558`, 14 CPUs and 235 GB per GPU; override the queue with `qsub -q dedicated ...`.
+  Training settings come from `configs/lora_ddp.yaml` / `configs/lora_megatron.yaml` (`--config`); each script lists only its
+  differences (GPUs, EP, batch, steps). Change a recipe in `configs/`, not in the scripts.
   `slurm/*.sbatch` are the legacy Orion versions the `.pbs` files were derived from; `pbs/` is now edited by hand.
 
 ## Interactive GPU sessions
