@@ -1,10 +1,10 @@
 #!/bin/bash
 #PBS -N omni_4x8
 #PBS -l select=4:ngpus=8:ncpus=112:mem=1880GB
-#PBS -l place=scatter:excl
+# (no place=: the R212478 reservation is place=free; whole-node chunks land on separate nodes anyway)
 #PBS -l walltime=04:00:00
-#PBS -q normal
-#PBS -P 13003558
+#PBS -q R212478
+#PBS -P 13003558_R4
 #PBS -j oe
 #PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/train_32gpu_4node.log
 #
@@ -13,7 +13,7 @@
 #   N0   NCCL all_reduce check (bandwidth; a few GB/s = InfiniBand not used -> stop and fix before training)
 #   H32A HF DDP (swift sft) 60 steps, eval + checkpoint at 30/60     H32B  resume H32A step 30 -> 60
 #   M32A Megatron EP=8 (experts inside a node, DP=32) 60 iterations  M32B  resume M32A iteration 30 with optimizer
-# Submit: qsub -q dedicated pbs/train_32gpu_4node.pbs      Summary: outputs/train_32gpu/summary.txt
+# Submit: qsub pbs/train_32gpu_4node.pbs      Summary: outputs/train_32gpu/summary.txt
 # Dry run of the launcher logic (no GPUs, no scheduler): DRY_RUN=1 PBS_NODEFILE=<file> bash pbs/train_32gpu_4node.pbs
 # Launch: pbsdsh starts nscc/node_run.sh on every node; it derives NNODES / NODE_RANK / MASTER_ADDR from the node list.
 set -u

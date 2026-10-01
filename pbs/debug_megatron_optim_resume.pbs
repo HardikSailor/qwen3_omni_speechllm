@@ -2,8 +2,8 @@
 #PBS -N omni_optimdbg
 #PBS -l select=1:ngpus=1:ncpus=14:mem=235GB
 #PBS -l walltime=02:00:00
-#PBS -q normal
-#PBS -P 13003558
+#PBS -q R212478
+#PBS -P 13003558_R4
 #PBS -j oe
 #PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/debug_megatron_optim_resume.log
 #

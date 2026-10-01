@@ -246,3 +246,31 @@
   B runs. H16A/H16B went to the key's default team (entity default was changed to i2r-llm mid-job); M16A/M16B are in
   `i2r-llm/meralion_v4`. First try (215045) failed at once: `report_to=['none','wandb']` -> fixed.
 - Not exercised live: a restart continuing the same run id (only in `tests/test_wandb.py`).
+
+**2026-10-01 (later): project data readable again; reserved queue only**
+- `/data/projects/13003558` back to group 13003558; all 14 `mixes/st_v0.yaml` paths found.
+- The aiq2 jobs 214952-214954 left the queue at 10:20 without starting ("would conflict with reservation ... terminated").
+- **User rule: GPU jobs use only `-q R212478 -P 13003558_R4`** (12 nodes). All `pbs/*.pbs` headers switched from
+  `-q normal -P 13003558`; `train_32gpu_4node.pbs` lost `place=scatter:excl` (the reservation is place=free); docs updated.
+- Job 215070: `qsub -v WANDB=1 pbs/train_16gpu_2node.pbs` on the ST mix (609,632 samples/epoch), W&B `i2r-llm/meralion_v4`.
+- **Job 215070 PASSED** (dgx001 + dgx003, 27 min, all phases exit 0), ST mix, global batch 32, `outputs/train_16gpu/summary.txt`:
+  | phase | loss 1 -> 60 | eval @30/60 | peak mem | s/it |
+  |---|---|---|---|---|
+  | H16A HF DDP, 16 GPUs | 1.123 -> 0.751 | 0.831 / 0.831 | 61.7 GiB | 1.45 |
+  | M16A Megatron EP=8, DP=16 | 1.121 -> 0.745 | 0.803 / 0.800 | 14.1 GiB | 2.2 |
+  - Resume 30 -> 60: max |loss diff| 0.0041 (HF), 0.0034 (Megatron with optimizer): same as the earlier ST runs (0.003-0.004).
+  - Partitions disjoint (both). NCCL busbw 415.8 GB/s. W&B: 4 runs in `i2r-llm/meralion_v4`, group `omni_2x8_215070`.
+- Next: `pbs/train_32gpu_4node.pbs` (4 nodes) on the reserved queue; then real training runs.
+- **Job 215088 PASSED: 4 nodes x 8 GPUs** (dgx001/003/005/006, R212478, 27 min, all phases exit 0), ST mix, global batch 32,
+  `outputs/train_32gpu/summary.txt`. NCCL world 32: busbw 307.5 GB/s.
+  | phase | loss 1 -> 60 | eval @30/60 | peak mem | s/it |
+  |---|---|---|---|---|
+  | H32A HF DDP, 32 GPUs | 1.208 -> 0.659 | 0.824 / 0.823 | 61.7 GiB | 0.91 |
+  | M32A Megatron EP=8, DP=32 | 1.209 -> 0.658 | 0.804 / 0.803 | 14.0 GiB | 1.64 |
+  - Resume 30 -> 60: max |loss diff| 0.0043 (HF), 0.0048 (Megatron with optimizer). Partitions over 32 ranks disjoint.
+  - Eval loss (same fixed validation set) as on 16 GPUs (0.82-0.83 HF, 0.80 Megatron). The last-step train loss differs
+    (0.66 vs 0.75): one 32-sample batch, and each world size reads a different sample order (canonical nodes 4 vs 2);
+    likely batch noise, not checked further.
+  - Speed per step at global batch 32: HF 1.45 s (16 GPUs) -> 0.91 s (32); Megatron 2.2 s -> 1.64 s.
+  - W&B group `omni_4x8_215088` in `i2r-llm/meralion_v4`.
+- The multi-node pipeline is tested on 2 and 4 nodes. Next: real training runs (recipe, steps, eval, data mix to decide).

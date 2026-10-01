@@ -31,7 +31,7 @@ for src in sorted((ROOT / "slurm").glob("*.sbatch")):
         l = l.replace("slurm/", "pbs/")
         out.append(l)
     hdr = ["#!/bin/bash", f"#PBS -N {name}", f"#PBS -l select=1:ngpus={gpus}:ncpus={14*gpus}:mem={235*gpus}GB",
-           f"#PBS -l walltime={wall}", "#PBS -q normal", "#PBS -P 13003558", "#PBS -j oe",
+           f"#PBS -l walltime={wall}", "#PBS -q R212478", "#PBS -P 13003558_R4", "#PBS -j oe",
            f"#PBS -o {ROOT}/outputs/pbs_logs/{src.stem}.log"]
     dst = ROOT / "pbs" / (src.stem + ".pbs")
     dst.write_text("\n".join(hdr + out) + "\n")

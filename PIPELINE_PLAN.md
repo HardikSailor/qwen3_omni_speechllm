@@ -307,7 +307,7 @@ How the full fine-tuning estimate is made (Megatron, EP=8, audio and vision enco
 
 | Question | Why it matters |
 |---|---|
-| Which H100 cluster exactly (ASPIRE2A+?), GPUs per node, interconnect | Sets EP size and whether multi-node Megatron is practical |
+| ~~Which H100 cluster exactly (ASPIRE2A+?), GPUs per node, interconnect~~ **Answered:** NSCC A2AP, 8 x H100 per node, InfiniBand (308-416 GB/s all_reduce busbw across 2-4 nodes, §10.12) | Sets EP size and whether multi-node Megatron is practical |
 | Apptainer/Singularity available there? | Otherwise the image must be converted to enroot |
 | Is the MDS data reachable from there, or does it need a copy? | Decides the reader and staging plan on that cluster |
 | Node-local disk size | Unzip staging (~2 TB) or mosaic cache (600 GB) |
@@ -385,7 +385,7 @@ Kept as in the old code: instruction dropout **keeps the audio** (`dropout_keep_
 
 **Cautions:**
 - `clean_stale_shared_memory()` removes every mosaic shared-memory segment this user owns on the node, including another running job's. Only call it when the job has the node to itself.
-- Two simulated *nodes* cannot run on one host (mosaic keys shared memory per host). The multi-node partition check needs the 2-node run (phase 4).
+- Two simulated *nodes* cannot run on one host (mosaic keys shared memory per host). The multi-node partition check needs the 2-node run (phase 4). *(Done 2026-10-01: disjoint on 2 and 4 nodes, §10.12.)*
 - Partitioning uses the global rank (`RANK`, `WORLD_SIZE`). Correct for DDP and Megatron EP with TP=PP=CP=1; with TP/CP > 1, set these to the data-parallel rank/size.
 - Cache size per node: the ST pilot touches up to ~200 GB of shards (GigaSpeech 107 GB + People's Speech 73 GB + CoVoST2); the full mix ~2 TB, so the 600 GB `cache_limit` evicts and re-unzips each epoch. Set per cluster in the profile (ASPIRE2A+ local disk size is still unknown).
 
@@ -616,3 +616,20 @@ The new server has enroot, not Apptainer:
 - `container/sif_to_enroot.sh` converts the image unchanged (→ `.sqsh`, 12.6 GB).
 - `run_container.sh` falls back to `run_container_enroot.sh`, so job scripts are unchanged.
 - **Job 150477:** the audio-LoRA smoke test passed on both trainers under enroot, with the same losses and memory as under Apptainer. Details: D24, `container/README.md`.
+
+### 10.12 Multi-node on NSCC and W&B logging (2026-10-01)
+
+Reserved queue `R212478` (project `13003558_R4`, 12 DGX H100 nodes), the only GPU queue from now on (D26).
+`pbs/train_16gpu_2node.pbs` and `pbs/train_32gpu_4node.pbs`: NCCL check, then both trainers on the ST mix, global batch 32,
+60 steps with eval and checkpoints at 30 / 60, resume 30 -> 60, partition check.
+
+| | NCCL busbw | HF DDP s/step | Megatron EP=8 s/step | Peak GiB HF / Megatron | Resume diff HF / Megatron |
+|---|---|---|---|---|---|
+| 2 nodes, 16 GPUs (job 215070) | 416 GB/s | 1.45 | 2.2 | 61.7 / 14.1 | 0.004 / 0.003 |
+| 4 nodes, 32 GPUs (job 215088) | 308 GB/s | 0.91 | 1.64 | 61.7 / 14.0 | 0.004 / 0.005 |
+
+- Partitions disjoint on 16 and 32 ranks; the data position (960 samples at step 30) restored on resume.
+- Eval loss on the fixed validation set matches across 2 and 4 nodes (HF 0.82-0.83, Megatron 0.80).
+- Fixed on the way: `pbsdsh` re-parsed the phase command (B23); the reservation refuses `place=scatter:excl`.
+- W&B (D27): `--wandb true` / `qsub -v WANDB=1`; all runs of these jobs are in `i2r-llm/meralion_v4`.
+

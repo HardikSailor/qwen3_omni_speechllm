@@ -329,7 +329,7 @@ Conventions:
 - **Decision:** the repo on `main` is the NSCC version. Orion material stays as legacy (`slurm/`, `transfer/`, marked in their READMEs; `pbs/convert_slurm_to_pbs.py` refuses to overwrite `pbs/` without `--force`).
 - **Container files are in git** (`container/`: launchers, `.def`, build and convert scripts, `smoke_test.sh`, `README.md`). The big files stay outside in `CONTAINER_HOME=/scratch/users/astar/ares/sailorhb/container` (`.sqsh`, model, `pydeps`, caches); the launchers find them through that variable. The copies in `CONTAINER_HOME` (old launchers, `.bak_*`) are superseded by the repo's.
 - **NSCC has no Apptainer**, so the image is the `.sqsh` converted on Orion. Rebuilding needs Apptainer elsewhere (`container/README.md`).
-- **pydeps** (`mosaicml-streaming` 0.13 and 4 helpers) is reinstalled in `CONTAINER_HOME/pydeps` from wheels downloaded on the login node: compute nodes cannot reach PyPI and the container gets no proxy.
+- **pydeps** (`mosaicml-streaming` 0.13 and 4 helpers) is reinstalled in `CONTAINER_HOME/pydeps` from wheels downloaded on the login node: compute nodes cannot reach PyPI and the container gets no proxy. *(Corrected 2026-10-01: compute nodes do reach PyPI, W&B and HF through the site proxy; the container now gets the proxy variables, see D27. Downloading on the login node still works.)*
 - **enroot data path:** the image is unpacked per job on the node's `/raid` (NSCC default, ~15 s). An unpack into shared scratch (`CONTAINER_HOME/enroot_data`, ~30 GB) was tried first and is not needed; it can be deleted.
 - **Data:** the same MDS tree is at `/data/projects/13003558/zoux/datasets/...`; `mixes/st_v0.yaml` and the tests point there. The launchers bind `/data/projects/13003558`.
 - **Launcher change:** `GLOO_SOCKET_IFNAME NCCL_IB_GID_INDEX NCCL_NET_GDR_LEVEL NCCL_CROSS_NIC NCCL_P2P_LEVEL TORCH_DISTRIBUTED_DEBUG` are forwarded into the container (needed for multi-node).
@@ -340,6 +340,43 @@ Conventions:
   - `tests/test_mosaic_stream.py`: 7/8 on a 1-GPU job; the 2-rank test needs two GPUs on the host (NCCL "Duplicate GPU").
 - **Not yet run:** `pbs/train_8gpu_both.pbs` (1 node x 8 GPUs) and `pbs/train_32gpu_4node.pbs` (4 nodes x 8 GPUs, launched with `pbsdsh`) wait for the dedicated queue; the launcher logic was dry-run and the one-node path run for real. Whether InfiniBand works inside the container is unchecked (the 4-node script measures it first).
 - **Bug B22:** `smoke_megatron_1gpu` resumed with `--no_save_optim true`, which the D17 guard rejects. Fixed in `slurm/` and `pbs/`.
+
+### D26. Reserved queue R212478 only; multi-node launch through a command file (2026-10-01, user)
+- **Decision (user):** every GPU job uses the reserved queue: `#PBS -q R212478`, `#PBS -P 13003558_R4` (12 DGX H100 nodes, 96 GPUs,
+  2026-10-01 to 10-31). No other GPU queue (`normal`, `aidev`, `aiq*`, `dedicated`). All `pbs/*.pbs` headers switched.
+- The reservation is `place=free`; a job asking for `place=scatter:excl` is refused ("job and reservation have conflicting
+  specification Resource_List.place"), so the scripts have no `place=` line. Whole-node chunks (`ngpus=8:ncpus=112`) still land on
+  separate nodes.
+- **Bug B23 (multi-node):** `pbsdsh` runs its arguments through a shell on each node, so `$RUN` in the phase command was expanded
+  there, before `node_run.sh` had sourced `nscc/env.sh`, and came out empty (`python: command not found`, exit 127, job 214958).
+  Fix: `run_phase` writes the phase command to `<out>/<phase>.cmd.sh` and the nodes run that file. Note: a phase prints `exit=0`
+  even when its node tasks fail; read the `[node_run] ... exit=` lines.
+- New `pbs/train_16gpu_2node.pbs` (2 x 8 GPUs). It and the 4-node script take `qsub -v MIX_FILE=mixes/<mix>.yaml` (2-node) and `WANDB=1`.
+- **Evidence:** ST mix, global batch 32, 60 steps, resume 30 -> 60, partition check:
+  - 2 nodes (job 215070): NCCL busbw 416 GB/s; HF 1.45 s/step, Megatron EP=8 2.2 s/step (14 GiB); resume diff 0.004 / 0.003;
+  - 4 nodes (job 215088): NCCL busbw 308 GB/s; HF 0.91 s/step, Megatron 1.64 s/step; resume diff 0.004 / 0.005;
+  - partitions disjoint on 16 and 32 ranks; InfiniBand works inside the container.
+- While `/data/projects/13003558` was unreadable (2026-10-01, group reset to root for some hours), the 2-node test ran on a
+  stand-in mix, `mixes/asr_ta_codeswitch_test.yaml` (jobs 215025, 215052).
+
+### D27. Weights & Biases through each trainer's own callback (2026-10-01, user request)
+- **Decision:** `train_omni.py --wandb true` (or `WANDB=1`, as in the user's sortformer scripts). No logging code of our own: it adds
+  `wandb` to `--report_to` and lets transformers' `WandbCallback` (rank 0, x axis `train/global_step`) or Megatron-SWIFT's
+  callback (last rank, x axis = iteration) log. Neither passes entity / group / tags / run id to `wandb.init`, so `train_omni.py`
+  sets `WANDB_*` variables, which `wandb.init` reads.
+- **Defaults:** entity `i2r-llm` (user's choice), project `meralion_v4`, run name = basename of `--output_dir`, files in
+  `<output_dir>/wandb`, `WANDB_LOG_MODEL=false` (no checkpoint upload). PBS scripts: one group per job, `<job name>_<job id>`.
+- **Resume (idea from multimodal_trainer, which keeps the run id in its training state):** each checkpoint gets `omni_wandb.json`,
+  written by the rank that holds the run. `--wandb_resume auto` continues that run when the checkpoint is inside `--output_dir`
+  (a restart); otherwise a new run starts in the same group, with a "resumed from" note. For Megatron, W&B drops the points
+  between the checkpoint and the last logged iteration (it logs against the iteration number).
+- **API key:** `WANDB_API_KEY`, else `~/.netrc` (`nscc/env.sh`). Not stored in the repo. (The multimodal_trainer enroot scripts
+  hard-code a key; not copied.)
+- **Network:** compute nodes reach `api.wandb.ai` only through the site proxy (probe job 215044); the launchers now forward
+  `http(s)_proxy` / `no_proxy` and the `WANDB_*` settings into the container.
+- **Evidence:** `tests/test_wandb.py` (CPU); jobs 215052, 215070, 215088: all runs finished in W&B with train/eval loss, our
+  options, the mix and `omni_effective` in the config. Not exercised live: a restart continuing the same run id.
+- **Bug B24:** the HF recipe has `report_to: none`; `none` + `wandb` is refused by transformers (job 215045). `setup_wandb` drops `none`.
 
 ---
 
@@ -395,7 +432,7 @@ Conventions:
 
 ---
 
-## 6. Where we are (updated 2026-09-29)
+## 6. Where we are (updated 2026-09-29; NSCC status 2026-10-01 in D25-D27 and `WORKLOG.md`)
 
 **Done:**
 - the data layer (`omni_mds`);
@@ -412,8 +449,8 @@ Conventions:
 3. Megatron re-run with bigger batches or packing, for a fair trainer choice (D5).
 4. Eval script: transformers + PEFT for in-training checks, merged + vLLM for final numbers (D22); the old metrics, per-task/language scores (phase 5), then a zero-shot baseline.
 5. Full-mix YAML and the data inventory (hours per task × language); fix or drop the 78 missing paths.
-6. A 2-node run (multi-node mosaic partitions; InfiniBand).
-7. ASPIRE2A+: profile files (`profiles/h100_a2ap.env`), PBS job headers.
+6. ~~A 2-node run (multi-node mosaic partitions; InfiniBand).~~ **done 10-01:** 2 and 4 nodes pass (D26).
+7. ~~ASPIRE2A+: profile files (`profiles/h100_a2ap.env`), PBS job headers.~~ **done 09-30/10-01:** `nscc/env.sh`, `pbs/` on R212478 (D25, D26).
 8. Test `swift export --merge_lora` on an HF and a Megatron adapter (with audio-encoder LoRA) and serve the result in vLLM; compare with PEFT outputs (`DEPLOYMENT.md` §7).
 9. Licence review of the final data mix before any commercial hand-off (`DEPLOYMENT.md` §6).
 10. Point `container/build_container.sh` at `third_party/ms-swift`, so the image is always built from the pinned submodule (D23).

@@ -9,10 +9,10 @@ The pipeline is **stock [ms-swift](https://github.com/modelscope/ms-swift) plus 
 | HF (`swift sft`) | `train_omni.py sft` | DDP | LoRA prototyping; plain PyTorch, easy to modify |
 | Megatron-SWIFT | `train_omni.py megatron` | Expert parallel (EP) | Large runs, expert LoRA, full fine-tuning, 80 GB GPUs |
 
-**Status (2026-09-30), running on NSCC (H100 80 GB, PBS, enroot):**
-- Both trainers pass on 1 and 2 H100 GPUs here (train, eval, resume; audio-encoder LoRA); on 1, 2, 4 and 8 H200 GPUs on the previous cluster.
-- Scripts for 1 node x 8 GPUs and 4 nodes x 8 GPUs are ready for the dedicated queue; not yet run.
-- LoRA inside the audio encoder is supported. The eval script is next.
+**Status (2026-10-01), running on NSCC (H100 80 GB, PBS, enroot), reserved queue `R212478` only:**
+- Both trainers pass on 1 and 2 H100 GPUs and on **2 and 4 nodes x 8 H100** (train, eval, resume, disjoint data partitions); on 1, 2, 4 and 8 H200 GPUs on the previous cluster. The 1-node x 8-GPU script has not run on NSCC yet.
+- LoRA inside the audio encoder is supported. Metrics go to Weights & Biases (`--wandb true`, `i2r-llm/meralion_v4`).
+- The eval script is next.
 
 The code moved from the previous cluster (Orion, Slurm, H200) to NSCC; older docs describe Orion, with paths mapped in [Paths](#paths). See `WORKLOG.md` for the daily log.
 
@@ -68,7 +68,7 @@ Read `toolkits/qwen3_omni_speechllm` as this repo, `container` and `hf_models` a
 
 ## What you need to run it
 
-- A GPU node: an interactive PBS job (`qsub -I -q ... -l select=1:ngpus=1:ncpus=14:mem=235GB -P 13003558`) or `qsub pbs/<job>.pbs`. Never run on the login node.
+- A GPU node: an interactive PBS job (`qsub -I -q R212478 -P 13003558_R4 -l select=1:ngpus=1:ncpus=14:mem=235GB`) or `qsub pbs/<job>.pbs`. Never run on the login node.
 - enroot (the only container runtime on NSCC compute nodes) and the image in `CONTAINER_HOME`. What the image contains and what was added on top: `container/README.md`.
 - The `pydeps` folder with `mosaicml-streaming` (the MDS reader, not in the image). Recreate: `container/README.md`.
 - Model weights and MDS data at the paths above; read access needs the project group `13003558`.
@@ -115,7 +115,7 @@ $RUN python train_omni.py megatron \
     --train_iters 1000 --save_steps 200 --eval_steps 200 --finetune true --output_dir outputs/my_meg_run
 ```
 
-**Job scripts:** `qsub pbs/<name>.pbs` (add `-q dedicated` for the dedicated queue). `train_4gpu_both.pbs`, `train_8gpu_both.pbs` (one node) and `train_32gpu_4node.pbs` (4 nodes x 8 GPUs) run both trainers with resume checks. Details: `nscc/README.md`. The scripts take their training settings from `configs/` and list only their own differences.
+**Job scripts:** `qsub pbs/<name>.pbs`; every header uses the reserved queue (`-q R212478 -P 13003558_R4`), the only GPU queue to use. `train_4gpu_both.pbs`, `train_8gpu_both.pbs` (one node) and `train_32gpu_4node.pbs` (4 nodes x 8 GPUs) run both trainers with resume checks. Details: `nscc/README.md`. The scripts take their training settings from `configs/` and list only their own differences.
 
 **Resume:**
 - HF: `--resume_from_checkpoint <ckpt>`.
@@ -231,6 +231,9 @@ Outside this directory (big files, not in git): `CONTAINER_HOME=/scratch/users/a
 | Resume from step 30 (max loss difference) | 0.004 | 0.003 (with optimizer) |
 | Audio-encoder LoRA top4 × attn_mlp (job 150442) | 24/24 encoder `lora_B` trained | 24/24 trained |
 | 8× H200 benchmark (job 147727, LibriSpeech) | 17.0 samples/s | EP=8: 13.5 samples/s, 14.2 GiB |
+| NSCC 2 nodes × 8 H100, global batch 32, 60 steps (job 215070) | loss 1.123 → 0.751, 61.7 GiB, 1.45 s/step | EP=8: loss 1.121 → 0.745, 14.1 GiB, 2.2 s/step |
+| NSCC 4 nodes × 8 H100, same (job 215088) | loss 1.208 → 0.659, 61.7 GiB, 0.91 s/step | EP=8: loss 1.209 → 0.658, 14.0 GiB, 1.64 s/step |
+| Resume from step 30 on 2 / 4 nodes | 0.004 / 0.004 | 0.003 / 0.005 (with optimizer) |
 
 The two trainers report eval loss on different scales (1.31 vs. 0.80); compare eval losses within one trainer only.
 
@@ -248,6 +251,8 @@ Details, sizing, the hand-off package and licences: **`DEPLOYMENT.md`**.
 - **Orion (Slurm, H200, Apptainer)**: where the pipeline was built and tested through 2026-09-29. Its scripts are kept as `slurm/` and `transfer/`, marked legacy.
 - **NSCC (PBS, H100 80 GB, enroot)**: the current home, from 2026-09-29. `pbs/`, `nscc/` and `container/` are the current scripts.
   H100 memory guidance is in `PIPELINE_PLAN.md` §9. Megatron EP is preferred on 80 GB GPUs.
+  From 2026-10-01 all GPU jobs use the reserved queue `R212478` (project `13003558_R4`, 12 nodes, until 2026-10-31); multi-node
+  training passed on 2 and 4 nodes (`nscc/README.md`, D26). Metrics go to W&B, `i2r-llm/meralion_v4` (D27).
 
 ## Documentation map
 
@@ -262,7 +267,7 @@ Details, sizing, the hand-off package and licences: **`DEPLOYMENT.md`**.
 | `WORKLOG.md` | Day-by-day log |
 | `omni_mds/VENDORED.md` | Files copied from the old trainer, with md5s |
 | `container/README.md` | The container: where it is, versions, what was added, launcher, rebuilding |
-| `nscc/README.md` | Running on NSCC: PBS scripts, multi-node design, dedicated-queue tests |
+| `nscc/README.md` | Running on NSCC: reserved queue, PBS scripts, multi-node design and results |
 
 ## Gotchas
 
