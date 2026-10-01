@@ -31,7 +31,8 @@ LAUNCH=(pbsdsh --)
 run_phase () {
   local name=$1 port=$2 cmd=$3
   echo "=== $name $(date)"
-  "${LAUNCH[@]}" env DRY_RUN=${DRY_RUN:-0} bash $P/nscc/node_run.sh $NODES $O/$name $port $GPUS -- bash -c "$cmd"
+  printf '%s\n' "$cmd" > $O/$name.cmd.sh   # pbsdsh re-parses its arguments in a shell on each node ($RUN expanded empty), so pass a file
+  "${LAUNCH[@]}" env DRY_RUN=${DRY_RUN:-0} bash $P/nscc/node_run.sh $NODES $O/$name $port $GPUS -- bash $O/$name.cmd.sh
   local rc=$?; echo "$name exit=$rc"
 }
 
@@ -42,6 +43,8 @@ grep -h nccl_check $O/N0.log 2>/dev/null
 # Training settings: the recipe in configs/ (--config); only this script's differences are listed. Later flags replace earlier ones.
 HF=(--config $P/configs/lora_ddp.yaml --gradient_accumulation_steps 1)   # 1 x 1 x 32 GPUs = global 32
 MEG=(--config $P/configs/lora_megatron.yaml)
+# W&B: qsub -v WANDB=1 ...; one run per phase (named after its output dir), all phases of this job in one group
+[ "${WANDB:-0}" = 1 ] && { WB=(--wandb true --wandb_group ${PBS_JOBNAME:-omni}_${PBS_JOBID%%.*}); HF+=("${WB[@]}"); MEG+=("${WB[@]}"); }
 q () { printf '%q ' "$@"; }              # shell-quote an argument array for bash -c
 
 run_phase H32A 29601 "OMNI_LOG_SAMPLE_IDS=$O/ids_H32A \$RUN python train_omni.py sft $(q "${HF[@]}") --output_dir $O/H32A"

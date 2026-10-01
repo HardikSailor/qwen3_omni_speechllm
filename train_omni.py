@@ -19,7 +19,9 @@ What this changes compared with plain `swift sft --dataset ...`:
     every skipped sample);
   - `OMNI_GPU_MEM_GB=80` caps GPU memory per process to emulate an 80 GB H100 on our H200s (§9.3);
   - `--audio_lora_layers all|top<K>|<a>-<b>` (+ `--audio_lora_modules attn|mlp|attn_mlp`) adds LoRA inside the audio
-    encoder: the layer linears are appended to --target_modules (both trainers).
+    encoder: the layer linears are appended to --target_modules (both trainers);
+  - `--wandb true` logs to Weights & Biases through each trainer's own callback (see setup_wandb): one run per launch,
+    named after --output_dir, with the run id saved in every checkpoint so a restart continues the same run.
 Everything else (model loading, LoRA, template, collator, trainer, saving) is stock ms-swift.
 """
 import argparse
@@ -33,6 +35,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 MOSAIC_STATE_FILE = 'omni_mosaic_state.json'
+WANDB_STATE_FILE = 'omni_wandb.json'
 # ms-swift's SftArguments require --dataset, and switch evaluation off unless --val_dataset is set. Our
 # _prepare_dataset ignores both, so the entry passes these placeholders (never loaded).
 TRAIN_PLACEHOLDER, VAL_PLACEHOLDER = 'OMNI_MDS_MIX_TRAIN', 'OMNI_MDS_MIX_VALIDATION'
@@ -72,6 +75,21 @@ def parse_omni_args(argv):
                         '<a>-<b> | i,j,k (0-based, ranges inclusive)')
     p.add_argument('--audio_lora_modules', default='attn', choices=list(AUDIO_LORA_MODULES),
                    help='linears per audio layer: attn = q/k/v/out_proj, mlp = fc1/fc2, attn_mlp = both')
+    # Weights & Biases (see setup_wandb). Defaults come from the environment, as in the old shell scripts (WANDB=1 ...).
+    env = os.environ.get
+    p.add_argument('--wandb', type=_bool, default=_bool(env('WANDB', '0')), help='log to W&B (default: $WANDB, else off)')
+    p.add_argument('--wandb_project', default=env('WANDB_PROJECT') or 'meralion_v4')
+    p.add_argument('--wandb_entity', default=env('WANDB_ENTITY') or 'i2r-llm', help='W&B team or user')
+    p.add_argument('--wandb_run_name', default=env('WANDB_NAME') or None, help='default: basename of --output_dir')
+    p.add_argument('--wandb_group', default=env('WANDB_RUN_GROUP') or None,
+                   help='groups related runs, e.g. the phases of one PBS job (default: none, or the resumed run\'s)')
+    p.add_argument('--wandb_tags', default=env('WANDB_TAGS') or None, help='comma separated')
+    p.add_argument('--wandb_mode', default=env('WANDB_MODE') or None, choices=[None, 'online', 'offline', 'disabled'],
+                   help='offline: write to <output_dir>/wandb and upload later with `wandb sync`')
+    p.add_argument('--wandb_dir', default=None, help='where the wandb/ folder goes (default: --output_dir)')
+    p.add_argument('--wandb_resume', default='auto', choices=['auto', 'always', 'never'],
+                   help='on resume, continue the checkpoint\'s W&B run: auto = only when the checkpoint is inside '
+                        '--output_dir (a restart of the same run), always, never (new run in the same group)')
     return p.parse_known_args(argv)
 
 
@@ -230,6 +248,112 @@ def write_effective(output_dir, info):
     print(f'[train_omni] effective settings -> {path}', flush=True)
 
 
+# ------------------------------------------------------------------------------------------------ W&B
+
+_WANDB_EXTRA_CONFIG = {}   # omni options + mix, added to the W&B run's config (set in main)
+
+
+def wandb_run():
+    """The active wandb run in this process, or None (only the trainer's logging rank has one)."""
+    wandb = sys.modules.get('wandb')
+    return getattr(wandb, 'run', None) if wandb is not None else None
+
+
+def wandb_update_config(info):
+    """Add our settings to the run's config (on the logging rank; a no-op elsewhere or without W&B)."""
+    run = wandb_run()
+    if run is not None:
+        run.config.update({**_WANDB_EXTRA_CONFIG, **info}, allow_val_change=True)
+
+
+def save_wandb_state(ckpt):
+    """The logging rank writes its run id next to the checkpoint, so a resume can continue the same run."""
+    run = wandb_run()
+    if run is None or not ckpt:
+        return
+    os.makedirs(ckpt, exist_ok=True)
+    with open(os.path.join(ckpt, WANDB_STATE_FILE), 'w') as f:
+        json.dump({'id': run.id, 'name': run.name, 'project': run.project, 'entity': run.entity,
+                   'group': run.group, 'url': run.url}, f)
+
+
+def setup_wandb(mode, omni, swift_argv):
+    """--wandb true -> the trainer arguments and WANDB_* variables that make both trainers log to the same project.
+
+    Both trainers log through their own callback on one rank (swift sft: transformers' WandbCallback on rank 0, logging
+    every --logging_steps against train/global_step; megatron: Megatron-SWIFT's callback on the last rank, against the
+    iteration). Neither passes entity / group / tags / run id to wandb.init, so they go in the environment, which
+    wandb.init reads. Every rank calls this with the same arguments, so they all agree.
+    Resume: the checkpoint's omni_wandb.json holds the run id. With --wandb_resume auto the run is continued when the
+    checkpoint lies inside --output_dir (a restart), else a new run starts in the same group. Megatron logs by
+    iteration, so after a restart W&B drops the points between the checkpoint and the last logged iteration."""
+    if not omni.wandb:
+        return swift_argv
+    out = argv_value(swift_argv, '--output_dir')
+    if not out:
+        sys.exit('train_omni.py: --wandb needs --output_dir (it names the run and holds the wandb/ folder)')
+    out = os.path.abspath(out)
+    name = omni.wandb_run_name or os.path.basename(out.rstrip('/'))
+    group, notes, run_id = omni.wandb_group, None, None
+
+    if mode == 'sft':
+        ckpt = argv_value(swift_argv, '--resume_from_checkpoint')
+    elif (argv_value(swift_argv, '--finetune') or '').lower() in ('false', '0'):
+        ckpt = argv_value(swift_argv, '--mcore_adapter') or argv_value(swift_argv, '--mcore_model')
+    else:
+        ckpt = None
+    prev = None
+    if ckpt and os.path.isfile(os.path.join(ckpt, WANDB_STATE_FILE)):
+        with open(os.path.join(ckpt, WANDB_STATE_FILE)) as f:
+            prev = json.load(f)
+    if prev:
+        inside = os.path.abspath(ckpt).startswith(out + os.sep)
+        if omni.wandb_resume == 'always' or (omni.wandb_resume == 'auto' and inside):
+            run_id, name = prev['id'], omni.wandb_run_name or prev.get('name') or name
+        else:
+            group = group or prev.get('group') or prev.get('name')
+            notes = f'resumed from {ckpt} (W&B run {prev.get("name")} / {prev["id"]})'
+
+    wdir = os.path.abspath(omni.wandb_dir or out)
+    os.makedirs(wdir, exist_ok=True)
+    env = {'WANDB_PROJECT': omni.wandb_project, 'WANDB_ENTITY': omni.wandb_entity, 'WANDB_RUN_GROUP': group,
+           'WANDB_TAGS': omni.wandb_tags, 'WANDB_MODE': omni.wandb_mode, 'WANDB_DIR': wdir, 'WANDB_NOTES': notes,
+           'WANDB_RUN_ID': run_id, 'WANDB_RESUME': 'allow' if run_id else None,
+           'WANDB_LOG_MODEL': os.environ.get('WANDB_LOG_MODEL', 'false')}   # never upload checkpoints by default
+    for k in ('WANDB_RUN_ID', 'WANDB_RESUME', 'WANDB_NOTES', 'WANDB_RUN_GROUP', 'WANDB_NAME'):
+        os.environ.pop(k, None)   # not inherited from the shell: this function decides them
+    os.environ.update({k: v for k, v in env.items() if v})
+
+    # report_to: add wandb to an explicit list (dropping `none`), else tensorboard (the default) + wandb
+    starts = [i for i, x in enumerate(swift_argv) if x == '--report_to']
+    if any(x.startswith('--report_to=') for x in swift_argv):
+        sys.exit('train_omni.py: with --wandb write `--report_to a b`, not `--report_to=`')
+    if not starts:
+        swift_argv = swift_argv + ['--report_to', 'tensorboard', 'wandb']
+    else:
+        i = starts[-1]
+        end = i + 1
+        while end < len(swift_argv) and not swift_argv[end].startswith('--'):
+            end += 1
+        kept = [x for x in swift_argv[i + 1:end] if x not in ('none', 'wandb')]   # `none` (the recipes) + wandb is invalid
+        swift_argv = swift_argv[:i + 1] + kept + ['wandb'] + swift_argv[end:]
+    given = {x.split('=')[0] for x in swift_argv if x.startswith('--')}
+    if mode == 'sft':
+        swift_argv += [] if '--run_name' in given else ['--run_name', name]
+    else:
+        swift_argv += [] if '--wandb_project' in given else ['--wandb_project', omni.wandb_project]
+        swift_argv += [] if '--wandb_exp_name' in given else ['--wandb_exp_name', name]
+    if os.environ.get('RANK', '0') != '0':
+        return swift_argv
+    print(f'[train_omni] W&B: project {omni.wandb_project}, run {name}'
+          + (f' (continuing {run_id})' if run_id else '') + (f', group {group}' if group else '')
+          + (f', mode {omni.wandb_mode}' if omni.wandb_mode else '') + f', dir {wdir}', flush=True)
+    if not os.environ.get('WANDB_API_KEY') and omni.wandb_mode not in ('offline', 'disabled'):
+        print('[train_omni] W&B: WANDB_API_KEY is not set (nscc/env.sh reads it from ~/.netrc); wandb.init may fail',
+              flush=True)
+    return swift_argv
+
+
 # ------------------------------------------------------------------------------------------------ trainer
 
 def make_streaming_trainer_cls(base, fix_adapter_config=False):
@@ -250,7 +374,7 @@ def make_streaming_trainer_cls(base, fix_adapter_config=False):
         def on_train_begin(self, args, state, control, model=None, optimizer=None, lr_scheduler=None, **kwargs):
             t = self.trainer
             world = t.accelerator.num_processes if getattr(t, 'accelerator', None) else 1
-            write_effective(args.output_dir, {
+            info = {
                 'trainer': 'swift sft (HF)',
                 'optimizer_class': type(getattr(optimizer, 'optimizer', optimizer)).__name__,
                 'optimizer_param_groups': group_summary(
@@ -265,7 +389,9 @@ def make_streaming_trainer_cls(base, fix_adapter_config=False):
                 'gradient_checkpointing': bool(getattr(model, 'is_gradient_checkpointing', args.gradient_checkpointing)),
                 'seed': args.seed, 'data_seed': args.data_seed,
                 'lora': lora_summary([model]),
-            })
+            }
+            write_effective(args.output_dir, info)
+            wandb_update_config({'omni_effective': info})
 
     class OmniStreamingTrainer(base):
         _omni_train_dl = None
@@ -326,6 +452,7 @@ def make_streaming_trainer_cls(base, fix_adapter_config=False):
                 logger.info(f'omni_mds: saved data position {state} to {ckpt}')
             if fix_adapter_config and ckpt and self.args.should_save:
                 fix_peft_target_modules(ckpt)
+            save_wandb_state(ckpt)
             return result
 
     OmniStreamingTrainer.__name__ = f'OmniStreaming{base.__name__}'
@@ -431,13 +558,19 @@ def make_omni_megatron_trainer_cls(base, fix_adapter_config=False):
 
     class OmniMegatronTrainer(base):
         _omni_train_dl = None
+        _omni_effective = None
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # the W&B callback (last rank) is created at the end of the base __init__, after the optimizer
+            wandb_update_config({'omni_effective': self._omni_effective or {}})
 
         def get_optimizer_and_scheduler(self):
             optimizer, sched = super().get_optimizer_and_scheduler()
             a = self.args
             opts = getattr(optimizer, 'chained_optimizers', [optimizer])
             cfg = getattr(opts[0], 'config', None)
-            write_effective(a.output_dir, {
+            info = {
                 'trainer': 'megatron sft (Megatron-SWIFT)',
                 'optimizer_class': [type(o).__name__ for o in opts],
                 'optimizer_config': {k: getattr(cfg, k, None) for k in (
@@ -457,7 +590,9 @@ def make_omni_megatron_trainer_cls(base, fix_adapter_config=False):
                 'pipeline_model_parallel_size': mpu.get_pipeline_model_parallel_world_size(),
                 'recompute_granularity': a.recompute_granularity, 'seed': a.seed,
                 'lora': lora_summary(self.wrapped_models),
-            })
+            }
+            write_effective(a.output_dir, info)
+            self._omni_effective = info
             return optimizer, sched
 
         def _omni_loader(self, dataset):
@@ -514,6 +649,7 @@ def make_omni_megatron_trainer_cls(base, fix_adapter_config=False):
                 logger.info(f'omni_mds: saved data position {state} to {ckpt}')
             if fix_adapter_config and ckpt and (not dist.is_initialized() or dist.get_rank() == 0):
                 fix_peft_target_modules(ckpt)
+            save_wandb_state(ckpt)   # written by the rank that holds the W&B run
             return result
 
     OmniMegatronTrainer.__name__ = f'Omni{base.__name__}'
@@ -761,6 +897,10 @@ def main(argv=None):
     swift_argv = add_audio_lora_targets(omni, swift_argv)
     if mode == 'megatron':
         check_megatron_resume_args(swift_argv)
+    swift_argv = setup_wandb(mode, omni, swift_argv)
+    if omni.wandb:
+        _WANDB_EXTRA_CONFIG.update({'omni': vars(omni), 'mix': {split: [spec.__dict__ for spec in specs]
+                                                                for split, specs in load_mix(omni.mix).items()}})
     swift_argv += ['--dataset', TRAIN_PLACEHOLDER, '--split_dataset_ratio', '0']
     if has_val and not eval_off:
         swift_argv += ['--val_dataset', VAL_PLACEHOLDER]

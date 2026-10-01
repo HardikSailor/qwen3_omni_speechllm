@@ -198,3 +198,51 @@
   (the only script that lacked it; speed only). `debug_megatron_optim_resume.pbs` is unchanged: it also runs plain
   `megatron sft`, which cannot read our train_omni-only keys. `tests/test_config.py` pins every script's differences.
 
+
+**2026-10-01: reserved queue R212478, first 2-node run**
+- Reservation `R212478` (RITM0187695): 12 DGX H100 nodes (96 GPUs), Oct 1 – Oct 31, project `13003558_R4`, `place=free`.
+- New `pbs/train_16gpu_2node.pbs` (2 x 8 GPUs, same phases as the 4-node script; HF grad-accum 2 -> global 32; Megatron EP=8, DP=16).
+  It has no `place=scatter:excl` line: qsub rejected it ("job and reservation have conflicting specification Resource_List.place").
+- **Launcher bug fixed** (also in `train_32gpu_4node.pbs`, which had never run): `pbsdsh` re-parses its arguments in a shell on each
+  node, so `$RUN` expanded empty -> `python: command not found` (job 214958, every phase exit 127). `run_phase` now writes the
+  phase command to `$O/<phase>.cmd.sh` and runs that file. Also: `run_phase` prints exit=0 even when the node tasks fail; read the
+  `[node_run] ... exit=` lines.
+- Job 214959 (dgx001 + dgx003): **NCCL across 2 nodes OK: world 16, all_reduce 512 MB 2.4 ms, busbw 415 GB/s** (InfiniBand used).
+  H16A / M16A failed at once: `mixes/st_v0.yaml: 14 dataset paths not found`. Cause: `/data/projects/13003558` is now
+  `drwxrws--- root:root` (group should be 13003558), so even the login node gets "Permission denied" under it. NSCC has to restore
+  the group; this also blocks the queued aiq2 jobs that use `/data/projects/13003558/hardik/...`.
+- Next: once data access is back, `qsub pbs/train_16gpu_2node.pbs` (failed logs kept in `outputs/train_16gpu_failed_214958`).
+
+**2026-10-01 (later): 2-node run PASSED on a stand-in dataset (job 215025, R212478, dgx001 + dgx002, 31 min)**
+- While the project folder is unreadable: `mixes/asr_ta_codeswitch_test.yaml` = the user's
+  `/scratch/users/astar/ares/sailorhb/datasets_v3/mixing_tamil_eng_codeswitch_30_ASR` (synthetic multi-speaker Tamil/English
+  code-switch ASR, 40,622 samples, 4 GB; MDS language "unk"). No held-out split: validation uses the same data.
+- `pbs/train_16gpu_2node.pbs` takes `qsub -v MIX_FILE=mixes/<mix>.yaml` (adds `--mix`, output dir `outputs/train_16gpu_<mix>`).
+- Results (`outputs/train_16gpu_asr_ta_codeswitch_test/summary.txt`), global batch 32:
+  | phase | loss 1 -> 60 | eval @30/60 | peak mem | s/it |
+  |---|---|---|---|---|
+  | H16A HF DDP | 0.478 -> 0.271 | 0.305 / 0.295 | 62.1 GiB | 1.4 |
+  | M16A Megatron EP=8, DP=16 | 0.479 -> 0.281 | 0.328 / 0.315 | 17.3 GiB | 2.3 |
+  - Resume 30 -> 60: max |loss diff| 0.0015 (HF) and 0.0014 (Megatron); data position 960 samples restored.
+  - Sample partitions over 16 ranks: 128 each, disjoint (both trainers). NCCL busbw 416.6 GB/s.
+- Multi-node launch (pbsdsh + `nscc/node_run.sh`) works. Next: the ST mix on 2 / 4 nodes once `/data/projects/13003558` is readable.
+
+**2026-10-01 (later): Weights & Biases logging (`--wandb`)**
+- Modelled on the user's sortformer script (`WANDB=1`, entity `i2r-llm`, project / run-name variables) and multimodal_trainer
+  (run id kept in the training state so a resume continues the run). The multimodal_trainer enroot scripts hard-code an API key;
+  not copied: the key comes from `WANDB_API_KEY` or `~/.netrc` (`nscc/env.sh`).
+- `train_omni.py --wandb true` (or `WANDB=1`): adds `wandb` to `--report_to` (dropping the recipes' `none`), sets
+  `--run_name` (sft) / `--wandb_project --wandb_exp_name` (megatron) and `WANDB_ENTITY/RUN_GROUP/TAGS/MODE/DIR/NOTES/RUN_ID`.
+  Defaults: project `meralion_v4`, entity `i2r-llm` (user's choice), run name = basename of `--output_dir`, files in
+  `<output_dir>/wandb`, no checkpoint upload. Run config also gets our options, the mix and `omni_effective`.
+  Each checkpoint gets `omni_wandb.json` (run id, written by the logging rank: rank 0 for sft, last rank for Megatron).
+  `--wandb_resume auto`: continue that run when the checkpoint is inside `--output_dir` (a restart), else a new run in its group.
+- Network: compute nodes reach api.wandb.ai through the site proxy (probe job 215044); the container launchers now forward
+  `http(s)_proxy` / `no_proxy` and the `WANDB_*` settings. (So the earlier "no PyPI from compute nodes" note was wrong: it goes via the proxy.)
+- PBS training scripts: `qsub -v WANDB=1 ...` -> all phases of a job in group `<job name>_<job id>`.
+- Tests: `tests/test_wandb.py` (CPU, 6 tests) pass; `tests/test_config.py` passes (2-node script added).
+- **Live test, job 215052** (2 nodes, stand-in mix, `WANDB=1`): all phases exit 0; resume diff 0.0014 (HF) / 0.0017 (Megatron);
+  partitions disjoint. W&B: 4 runs finished in group `omni_2x8_215052` with train/eval loss, config, "resumed from" notes on the
+  B runs. H16A/H16B went to the key's default team (entity default was changed to i2r-llm mid-job); M16A/M16B are in
+  `i2r-llm/meralion_v4`. First try (215045) failed at once: `report_to=['none','wandb']` -> fixed.
+- Not exercised live: a restart continuing the same run id (only in `tests/test_wandb.py`).

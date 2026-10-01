@@ -1,0 +1,17 @@
+# Stand-in mix for pipeline / multi-node tests while /data/projects/13003558 is unreadable (2026-10-01, see WORKLOG).
+# One dataset in the user's scratch: synthetic multi-speaker Tamil(-English) code-switch ASR, 64 shards, 40,622 samples,
+# 4 GB. Audio in context_audio; answer_text has <SpeakerN>: turns; one instruction ("Please transcribe the speech");
+# MDS language column = "unk", task = ASR.
+# No held-out split exists: validation draws from the same data, so eval loss is NOT a held-out number.
+train:
+  - name: ASR_mixing_tamil_eng_codeswitch_30_ASR
+    path: /scratch/users/astar/ares/sailorhb/datasets_v3/mixing_tamil_eng_codeswitch_30_ASR
+    task: ASR
+    weight: 1.0
+
+validation:
+  - name: ASR_mixing_tamil_eng_codeswitch_30_ASR
+    path: /scratch/users/astar/ares/sailorhb/datasets_v3/mixing_tamil_eng_codeswitch_30_ASR
+    task: ASR
+    choose: 512
+    weight: 1.0

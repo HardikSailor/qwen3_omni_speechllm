@@ -101,6 +101,8 @@ SCRIPT_OVERRIDES = [
     ('train_4gpu_both.pbs', 'MEG', 'megatron', ['--expert_model_parallel_size', '4']),
     ('train_32gpu_4node.pbs', 'HF', 'ddp', ['--gradient_accumulation_steps', '1']),
     ('train_32gpu_4node.pbs', 'MEG', 'megatron', []),
+    ('train_16gpu_2node.pbs', 'HF', 'ddp', ['--gradient_accumulation_steps', '2']),
+    ('train_16gpu_2node.pbs', 'MEG', 'megatron', []),
 ]
 
 

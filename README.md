@@ -149,6 +149,10 @@ NPROC_PER_NODE=8 $RUN python train_omni.py megatron --config configs/lora_megatr
 | `--audio_lora_modules` | `attn` | `attn` (q/k/v/out_proj), `mlp` (fc1/fc2), `attn_mlp` |
 | `--asr_prompt_type`, `--ac_prompt_type`, `--english_prompt_weight`, `--augment_prompt`, `--instruction_dropout_rate`, `--asr_normalize_text`, `--augment_audio` | as in the old trainer | Per-sample prompt and augmentation settings (`omni_mds/sea_text.py`) |
 | `--omni_cache_root`, `--cache_limit`, `--shuffle_block_size`, `--num_canonical_nodes` | – | Mosaic reader settings |
+| `--wandb` | `$WANDB`, else `false` | Log to Weights & Biases (both trainers), see below |
+| `--wandb_project`, `--wandb_entity`, `--wandb_run_name`, `--wandb_group`, `--wandb_tags` | `$WANDB_PROJECT` or `meralion_v4`; `$WANDB_ENTITY` or `i2r-llm`; basename of `--output_dir`; none; none | Where the run goes and how it is named (each also read from the matching `WANDB_*` variable) |
+| `--wandb_mode` | online | `offline` writes to `<output_dir>/wandb`; upload later with `wandb sync <dir>` |
+| `--wandb_resume` | `auto` | On resume: `auto` continues the checkpoint's run only when the checkpoint is inside `--output_dir` (a restart), else starts a new run in the same group; `always`; `never` |
 
 Environment variables:
 - `OMNI_GPU_MEM_GB=80` caps GPU memory (emulates an H100 on an H200; harmless on H100).
@@ -157,6 +161,16 @@ Environment variables:
 Guards added automatically unless you pass the flag yourself:
 - `--save_total_limit 3`;
 - `--merge_lora false` for Megatron (its default writes a 66 GB merged copy per checkpoint).
+
+**Weights & Biases.** `--wandb true` (or `WANDB=1`, as in the old shell scripts) adds `wandb` to `--report_to` and lets
+each trainer log through its own callback: `swift sft` on rank 0 every `--logging_steps` (x axis `train/global_step`),
+Megatron on the last rank every `--log_interval` (x axis = iteration). One run per launch, named after `--output_dir`; the run
+config holds the trainer arguments plus our options, the mix and `omni_effective.json`. The run id is saved as
+`omni_wandb.json` in every checkpoint, so a restart from a checkpoint inside the same `--output_dir` continues the same run
+(for Megatron, W&B drops the points between the checkpoint and the last logged iteration). Checkpoints are not uploaded
+(`WANDB_LOG_MODEL=false`). The API key comes from `WANDB_API_KEY`, else `~/.netrc` (read by `nscc/env.sh`); compute nodes
+reach `api.wandb.ai` through the site proxy, which the container launcher forwards. PBS training scripts: `qsub -v WANDB=1 ...`
+puts every phase of the job in one group `<job name>_<job id>`.
 
 **Audio-encoder LoRA example:** add LoRA to the attention and MLP of the last 8 encoder layers:
 ```bash
@@ -199,11 +213,13 @@ Outside this directory (big files, not in git): `CONTAINER_HOME=/scratch/users/a
 |---|---|---|
 | `tests/test_sea_text.py` | CPU | Prompt/target parity with the old trainer (8,392/8,392), dropout, augmentation |
 | `tests/test_mosaic_stream.py` | CPU | Reader: same samples, `choose` per epoch, fixed validation set, disjoint ranks (needs >= 2 GPUs on the host), exact resume |
+| `tests/test_config.py`, `tests/test_wandb.py` | CPU | `--config` expansion and the pbs/ scripts' differences; `--wandb` arguments, environment and resume rules |
 | `tests/check_encode_cpu.py` | CPU | Full data path without the model: 13 audio tokens/s, label masking, padding-free batches |
 | `pbs/smoke_1gpu.pbs`, `smoke_megatron_1gpu.pbs` | 1 GPU | Train, eval, resume, 80 GB cap |
 | `pbs/smoke_audio_lora_2gpu.pbs` | 2 GPUs, ~12 min | Both trainers with audio-encoder LoRA. **Good first check on a new cluster** |
 | `pbs/train_4gpu_both.pbs`, `train_8gpu_both.pbs` | 4 / 8 GPUs | Both trainers, resume, partition check |
 | `pbs/train_32gpu_4node.pbs` | 4 nodes x 8 GPUs | NCCL bandwidth, then both trainers on 32 GPUs with resume |
+| `pbs/train_16gpu_2node.pbs` | 2 nodes x 8 GPUs | The same on 16 GPUs, reserved queue R212478; `qsub -v MIX_FILE=...,WANDB=1` |
 
 `tests/summarize_smoke.py <out_dir> A B C` summarises a run. It prints loss, memory, speed, the resume loss difference, adapter contents (including which encoder layers have LoRA and whether they trained) and the saved data position.
 

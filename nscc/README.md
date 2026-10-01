@@ -18,8 +18,17 @@ Paths, what the container holds, and how to recreate `pydeps`: `../container/REA
 ## Interactive GPU sessions
 
 Run everything on a GPU node, not the login node. Example: `qsub -I -q aidev -P 13003558 -l select=1:ngpus=1:ncpus=14:mem=235GB -l walltime=12:00:00`.
-Compute nodes have no route to PyPI (the container has no proxy either); download wheels on the login node.
+Compute nodes reach the internet only through the site proxy (`https_proxy`, set in jobs; checked 2026-10-01: api.wandb.ai,
+PyPI, huggingface.co). The container launcher forwards the proxy variables (for W&B); `HF_HUB_OFFLINE=1` stays set.
 The first model load in a job takes ~8 min (63 GB from the shared filesystem), later loads on the same node ~2 min (page cache).
+
+## Reserved queue R212478 (2026-10-01 .. 2026-10-31)
+
+12 DGX H100 nodes (96 GPUs) reserved for this group: `#PBS -q R212478` and `#PBS -P 13003558_R4`. The reservation is
+`place=free`, so scripts for it must not ask for `place=scatter:excl` (qsub: "job and reservation have conflicting
+specification"); whole-node chunks (`ngpus=8:ncpus=112`) land on separate nodes anyway.
+`qsub [-v MIX_FILE=mixes/<mix>.yaml,WANDB=1] pbs/train_16gpu_2node.pbs`: 2 nodes, same phases as the 4-node test.
+Passed on 2026-10-01 (jobs 215025, 215052; WORKLOG).
 
 ## Dedicated-queue tests (8 GPUs on 1 node, 32 GPUs on 4 nodes)
 

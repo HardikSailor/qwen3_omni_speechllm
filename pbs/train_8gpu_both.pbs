@@ -29,6 +29,8 @@ echo "node $(hostname)  start $(date)"; nvidia-smi -L; df -h /tmp | tail -1
 # Training settings: the recipe in configs/ (--config); only this script's differences are listed. Later flags replace earlier ones.
 HF=(--config $P/configs/lora_ddp.yaml)
 MEG=(--config $P/configs/lora_megatron.yaml)
+# W&B: qsub -v WANDB=1 ...; one run per phase (named after its output dir), all phases of this job in one group
+[ "${WANDB:-0}" = 1 ] && { WB=(--wandb true --wandb_group ${PBS_JOBNAME:-omni}_${PBS_JOBID%%.*}); HF+=("${WB[@]}"); MEG+=("${WB[@]}"); }
 
 echo "=== H8A $(date)"
 OMNI_LOG_SAMPLE_IDS=$O/ids_H8A MASTER_PORT=29571 $RUN python train_omni.py sft "${HF[@]}" --output_dir $O/H8A \
