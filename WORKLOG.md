@@ -450,3 +450,21 @@ Next: read the quick report (`outputs/evals/mv4_lora_v0/quick/report.md`); evalu
   ```
   Output `outputs/evals/mv4_lora_v0/quick/` (`report.md`, `verify_switch.log`). The odd checkpoints and the final one
   can go to a second node with the same command and their own `CKPTS`.
+- `nscc/check_nodes.py [pbs script] [--exclude ...]`: free R212478 nodes for a PBS script (pbs_rstat + pbsnodes; a node
+  counts only if `free` with no jobs; dgx011 excluded by default) and a ready `qsub -l select=1:host=...+...` that keeps
+  the global batch at 256. 2026-10-02 check: 7 / 12 free (dgx006/008/009/012/014/018/020); dgx001-003/005 busy with
+  215594 (another reservation user); dgx011 holds 215570. Short of the 8 that train_mv4_lora_v0.pbs asks for.
+- Next-run strategy written up: `docs/training_strategy_mv4.md`. Checked: mosaic `balanced` sampling draws a new `choose`
+  subset per epoch with seed `data_seed + epoch` (so seed 43 epoch 0 = seed 42 epoch 1; use 1042, 2042, ...). v0 eval
+  loss flat from ~11 k (0.679 -> 0.675 at 18.5 k).
+- `train_omni.py --adapters <dir>` (check_init_adapters): new run from an earlier LoRA (weights only); refuses it with
+  --resume_from_checkpoint or megatron; warns on --lora_rank/alpha/dropout mismatch; `init_adapter` in
+  omni_effective.json. PBS: `CONFIG=`, `RUN_NAME=`, `INIT=` in pbs/train_mv4_lora_v0.pbs. Draft
+  `configs/mv4_lora_v1_cont.yaml` (from ckpt-18500, data_seed 1042, LR 5e-5 / 300 warmup / cosine to 1e-5, 9,250 steps,
+  mix still mv4_v0). Not yet run on GPUs: smoke first.
+- `tools/average_lora.py` (concat = exact mean of B@A at rank k*r; mean = A, B averaged). Job 215607 built
+  `$RUN_DIR/avg4-16000-18500-{concat,mean}`: concat self-check 2.5e-7; mean differs from exact by <= 6.5e-4 relative
+  (the last four checkpoints are very close).
+- eval_omni.pbs: parallel jobs on one NAME/TIER (logs in `$O/_logs/<job>/`, per-job verify dir), `AVERAGE=`, absolute
+  CKPTS; report orders base, checkpoints, others. 7 one-node jobs 215601-215607 on dgx006/008/009/012/014/018/020:
+  base+2k..8k (score/judge, rest of 8k), 10k+12k, 11k+13k, 14k+16k, 15k+18.5k, 17k+18k, the two averages.

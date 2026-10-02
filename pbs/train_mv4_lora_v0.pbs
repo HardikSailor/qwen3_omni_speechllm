@@ -14,11 +14,15 @@
 # Submit:  qsub pbs/train_mv4_lora_v0.pbs
 # Smoke:   qsub -v SMOKE=1 -l walltime=01:00:00 pbs/train_mv4_lora_v0.pbs   (outputs/runs/mv4_lora_v0_smoke)
 # Resume:  qsub -v RESUME=<run dir>/v0-.../checkpoint-<N> pbs/train_mv4_lora_v0.pbs   (same output dir: same W&B run)
+# Init:    qsub -v CONFIG=configs/mv4_lora_v1_cont.yaml,RUN_NAME=mv4_lora_v1_cont pbs/train_mv4_lora_v0.pbs
+#          (new run from an earlier LoRA: the config's `adapters:`, or INIT=<checkpoint dir>; weights only, fresh
+#          optimizer / schedule / data order; docs/training_strategy_mv4.md)
 # Nodes:   qsub -l select=<K>:ngpus=8:ncpus=112:mem=1880GB -v ACCUM=<256 / (8 K)> ...   (keeps the global batch at 256)
 # The run dir gets omni_run/ (this script, the config, the mix, the full command; train_omni.py save_run_files).
 set -u
 source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # P, C, MODEL, RUN, ...
-NAME=mv4_lora_v0
+NAME=${RUN_NAME:-mv4_lora_v0}
+CONFIG=${CONFIG:-$P/configs/mv4_lora_v0.yaml}
 [ "${SMOKE:-0}" = 1 ] && NAME=${NAME}_smoke   # SMOKE=1: 20 steps, eval + save at 10, separate dir and W&B group
 O=$P/outputs/runs/$NAME
 mkdir -p $O; cd $P
@@ -62,10 +66,11 @@ grep -h "shm cleaned" $O/shmclean*.log | sort | uniq -c
 
 ACCUM=${ACCUM:-$((256 / (8 * NN)))}       # global batch 256 = 1 x ACCUM x 8 x NN
 # num_canonical_nodes fixed at 8 (the planned node count): the data order then stays the same if a resume uses 1, 2 or 4 nodes
-ARGS=(--config $P/configs/mv4_lora_v0.yaml --gradient_accumulation_steps $ACCUM --num_canonical_nodes 8
+ARGS=(--config $CONFIG --gradient_accumulation_steps $ACCUM --num_canonical_nodes 8
       --wandb true --wandb_group $NAME --output_dir $O)
 [ "${SMOKE:-0}" = 1 ] && ARGS+=(--max_steps 20 --warmup_steps 5 --save_steps 10 --eval_steps 10 --val_choose 4 --logging_steps 1)
 [ -n "${RESUME:-}" ] && ARGS+=(--resume_from_checkpoint $RESUME)
+[ -n "${INIT:-}" ] && ARGS+=(--adapters $INIT)   # train_omni.py refuses INIT + RESUME
 q () { printf '%q ' "$@"; }
 PHASE=train_$(echo ${PBS_JOBID:-dry} | cut -d. -f1)
 run_phase $PHASE 29601 "OMNI_RUN_EXTRA_FILES=$P/pbs/train_mv4_lora_v0.pbs \$RUN python train_omni.py sft $(q "${ARGS[@]}")"

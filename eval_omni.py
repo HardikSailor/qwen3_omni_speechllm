@@ -249,9 +249,10 @@ def cmd_score(args):
 # ---------------------------------------------------------------- report
 
 def cmd_report(args):
-    def order(d):  # base first, then by checkpoint step
-        m = re.search(r'(\d+)$', os.path.basename(os.path.normpath(d)))
-        return (m is not None, int(m.group(1)) if m else 0, d)
+    def order(d):  # base first, then checkpoints by step, then anything else (e.g. averages) by name
+        name = os.path.basename(os.path.normpath(d))
+        m = re.fullmatch(r'checkpoint-(\d+)', name)
+        return (0, 0, name) if name == 'base' else (1, int(m.group(1)), name) if m else (2, 0, name)
 
     runs = sorted((d for d in args.dirs if os.path.exists(os.path.join(d, 'scores.json'))), key=order)
     if not runs:

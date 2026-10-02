@@ -20,6 +20,8 @@ What this changes compared with plain `swift sft --dataset ...`:
   - `OMNI_GPU_MEM_GB=80` caps GPU memory per process to emulate an 80 GB H100 on our H200s (§9.3);
   - `--audio_lora_layers all|top<K>|<a>-<b>` (+ `--audio_lora_modules attn|mlp|attn_mlp`) adds LoRA inside the audio
     encoder: the layer linears are appended to --target_modules (both trainers);
+  - `--adapters <checkpoint dir>` (swift sft) starts training from an earlier run's LoRA (weights only: new optimizer,
+    LR schedule, data order and W&B run; see check_init_adapters). `--resume_from_checkpoint` is the exact restart;
   - `--wandb true` logs to Weights & Biases through each trainer's own callback (see setup_wandb): one run per launch,
     named after --output_dir, with the run id saved in every checkpoint so a restart continues the same run.
 Everything else (model loading, LoRA, template, collator, trainer, saving) is stock ms-swift.
@@ -425,6 +427,7 @@ def make_streaming_trainer_cls(base, fix_adapter_config=False):
                 'global_batch_size': args.per_device_train_batch_size * args.gradient_accumulation_steps * world,
                 'gradient_checkpointing': bool(getattr(model, 'is_gradient_checkpointing', args.gradient_checkpointing)),
                 'seed': args.seed, 'data_seed': args.data_seed,
+                'init_adapter': _INIT_ADAPTER.get('path'),
                 'lora': lora_summary([model]),
             }
             write_effective(args.output_dir, info)
@@ -914,6 +917,39 @@ def add_audio_lora_targets(omni, swift_argv):
     return swift_argv[:end] + extra + swift_argv[end:]
 
 
+_INIT_ADAPTER = {}   # --adapters: the LoRA this run starts from (recorded in omni_effective.json)
+
+
+def check_init_adapters(mode, swift_argv):
+    """`--adapters <dir>`: continue training an earlier run's LoRA as the new run's starting point. ms-swift sft loads it
+    with `from_pretrained(..., is_trainable=True)` (pipelines/train/tuner.py), so only the adapter weights carry over:
+    the optimizer, the LR schedule (warmup again) and the data position start fresh; with a new --data_seed the mosaic
+    `choose` subsets are drawn anew. The adapter's own adapter_config.json decides rank, alpha, dropout and target
+    modules; --lora_rank / --lora_alpha / --target_modules are then ignored by ms-swift, so a mismatch is reported here.
+    Not combined with --resume_from_checkpoint (that restores everything, including the data position)."""
+    path = argv_value(swift_argv, '--adapters')
+    if not path:
+        return
+    if mode != 'sft':
+        sys.exit('train_omni.py megatron: start from a LoRA with --mcore_adapter <dir> --finetune true, not --adapters')
+    if argv_value(swift_argv, '--resume_from_checkpoint'):
+        sys.exit('train_omni.py: give --adapters (new run from these LoRA weights) or --resume_from_checkpoint '
+                 '(exact restart), not both')
+    cfg_path = os.path.join(path, 'adapter_config.json')
+    if not (os.path.isfile(cfg_path) and os.path.isfile(os.path.join(path, 'adapter_model.safetensors'))):
+        sys.exit(f'train_omni.py: --adapters {path}: no adapter_config.json + adapter_model.safetensors')
+    with open(cfg_path) as f:
+        cfg = json.load(f)
+    for flag, key in (('--lora_rank', 'r'), ('--lora_alpha', 'lora_alpha'), ('--lora_dropout', 'lora_dropout')):
+        v = argv_value(swift_argv, flag)
+        if v is not None and float(v) != float(cfg.get(key, v)):
+            print(f'[train_omni] WARNING: {flag} {v} is ignored, the adapter in {path} has {key}={cfg[key]}', flush=True)
+    _INIT_ADAPTER['path'] = os.path.abspath(path)
+    print(f'[train_omni] init from adapter {path}: r={cfg.get("r")} alpha={cfg.get("lora_alpha")} '
+          f'{len(cfg.get("target_modules") or [])} target modules (weights only; fresh optimizer, schedule, data)',
+          flush=True)
+
+
 def fix_peft_target_modules(adapter_dir):
     """adapter_config.json target_modules match more modules than were trained: Megatron-SWIFT writes bare names
     (q_proj, fc1, ...), and swift sft shortens the list (e.g. `28.self_attn.k_proj`, which also matches LLM layer 28).
@@ -967,6 +1003,7 @@ def main(argv=None):
     swift_argv = fix_hf_warmup_steps(mode, swift_argv)
     swift_argv += safe_save_defaults(mode, swift_argv)
     swift_argv = add_audio_lora_targets(omni, swift_argv)
+    check_init_adapters(mode, swift_argv)
     if mode == 'megatron':
         check_megatron_resume_args(swift_argv)
     swift_argv = setup_wandb(mode, omni, swift_argv)

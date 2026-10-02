@@ -14,7 +14,9 @@
 #   qsub -v RUN_DIR=<run>/v0-...,CKPTS="base checkpoint-5000 checkpoint-10000" pbs/eval_omni.pbs
 # Variables (qsub -v):
 #   RUN_DIR   dir holding checkpoint-* (default: the mv4_lora_v0 run)
-#   CKPTS     names under RUN_DIR, or "base" for the base model (default: "base" + every checkpoint-* not yet evaluated)
+#   CKPTS     names under RUN_DIR (or absolute adapter dirs), "base" = the base model (default: "base" + every checkpoint-*)
+#   AVERAGE   checkpoint names to average first (tools/average_lora.py): writes $RUN_DIR/avg<k>-<first>-<last>-<mode>
+#             for each of AVG_MODES (default "concat mean") unless it exists, and evaluates them after CKPTS
 #   NAME      output name: outputs/evals/<NAME>/<ckpt>/ (default: the run dir name above v0-*)
 #   SUITE     default evals/suite_v0.yaml;  TIER  smoke | quick | full (default quick);  ONLY  space-separated set names
 #   JUDGE     1 (default) = also the judge metrics;  CHECK=1 = only the CPU suite check (tests/check_eval_suite.py,
@@ -22,6 +24,9 @@
 #   VERIFY_SWITCH  1 (default): reload the last model fresh and compare 6 sets with its switched-in predictions
 #   BATCH     generation batch per GPU (default 8);  MAX_BATCH_AUDIO_S  audio seconds per batch (default 480)
 # Name a free healthy node if needed: qsub -l select=1:host=a2ap-dgx002:ngpus=8:ncpus=112:mem=1880GB ...
+# Several jobs at once (one node each, disjoint CKPTS, same NAME/TIER): results go to per-model dirs, logs to
+# $O/_logs/<job id>/, so they do not collide. Give each job its own -o: qsub -o outputs/pbs_logs/eval_<x>.log ...
+# Generated sets are skipped, so a job whose models are all generated only scores, judges and reports.
 set -u
 source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # P, C, MODEL, RUN
 # optional libraries of the AudioBench-SEA normalisers (num2words, malaya, pythainlp, NeMo TN, ...), eval only;
@@ -38,23 +43,40 @@ TIER=${TIER:-quick}
 JUDGE=${JUDGE:-1}
 BATCH=${BATCH:-8}
 O=$P/outputs/evals/$NAME/$TIER
-mkdir -p $O
+L=$O/_logs/$(echo ${PBS_JOBID:-$$} | cut -d. -f1)   # this job's logs (parallel jobs share $O)
+mkdir -p $O $L
 ONLY_ARGS=(); [ -n "${ONLY:-}" ] && ONLY_ARGS=(--only $ONLY)
 
 # 0. CPU check of the suite (every set loads; references score perfectly). Not fatal unless CHECK=1 (check only).
-$RUN python tests/check_eval_suite.py $SUITE > $O/check_suite.log 2>&1; echo "suite check exit=$? ($O/check_suite.log)"
-grep -E "^FAIL|failures" $O/check_suite.log
+$RUN python tests/check_eval_suite.py $SUITE > $L/check_suite.log 2>&1; echo "suite check exit=$? ($L/check_suite.log)"
+grep -E "^FAIL|failures" $L/check_suite.log
 [ "${CHECK:-0}" = 1 ] && exit
 
-if [ -z "${CKPTS:-}" ]; then
+CKPTS=${CKPTS:-}
+if [ -z "$CKPTS" ] && [ -z "${AVERAGE:-}" ]; then   # AVERAGE alone: only the averages
   CKPTS=base
   for d in $(ls -d $RUN_DIR/checkpoint-* | sort -t- -k2 -n); do CKPTS="$CKPTS $(basename $d)"; done
 fi
-echo "run dir: $RUN_DIR"; echo "models: $CKPTS"; echo "suite: $SUITE tier $TIER -> $O"
+# 0b. checkpoint averages (AVERAGE=...): CPU, a few minutes; the self-check inside fails the job on a bad average
+if [ -n "${AVERAGE:-}" ]; then
+  A=($AVERAGE); first=${A[0]##*-}; last=${A[-1]##*-}
+  for mode in ${AVG_MODES:-concat mean}; do
+    d=avg${#A[@]}-$first-$last-$mode
+    if [ ! -f $RUN_DIR/$d/adapter_model.safetensors ]; then
+      $RUN python tools/average_lora.py --mode $mode --out $RUN_DIR/$d $(for c in "${A[@]}"; do echo $RUN_DIR/$c; done) \
+          > $L/average_$mode.log 2>&1 || { echo "average $mode FAILED:"; tail -20 $L/average_$mode.log; exit 4; }
+    fi
+    tail -1 $L/average_$mode.log 2>/dev/null; CKPTS="$CKPTS $d"
+  done
+fi
+echo "run dir: $RUN_DIR"; echo "models: $CKPTS"; echo "suite: $SUITE tier $TIER -> $O (logs $L)"
 
 # 1. generate: 8 processes (one model copy per GPU); the base model is loaded once (~8 min) and the checkpoints'
 #    LoRA adapters are switched in turn (seconds each)
-MODELS=(); for c in $CKPTS; do [ "$c" = base ] && MODELS+=(base) || MODELS+=($RUN_DIR/$c); done
+MODELS=(); for c in $CKPTS; do
+  case $c in base) MODELS+=(base);; /*) MODELS+=($c);; *) MODELS+=($RUN_DIR/$c);; esac
+done
+NAMES=(); for m in "${MODELS[@]}"; do NAMES+=($(basename $m)); done   # output dirs under $O
 echo "=== generate $(date)"
 $RUN python -m torch.distributed.run --nproc_per_node 8 --master_port 29711 eval_omni.py generate \
     --suite $SUITE --tier $TIER --models "${MODELS[@]}" --out_root $O --batch_size $BATCH \
@@ -64,19 +86,19 @@ echo "generate exit=$? $(date)"
 # 1b. switching check (VERIFY_SWITCH=1, default): the last model was switched in after the others; load it fresh in a
 #     new process, regenerate a few sets and compare. Any difference means the switched results are not trustworthy.
 if [ "${VERIFY_SWITCH:-1}" = 1 ] && [ ${#MODELS[@]} -gt 1 ]; then
-  LAST=${MODELS[-1]}; V=$O/_verify_fresh
+  LAST=${MODELS[-1]}; V=$L/verify_fresh   # per job: an older verify dir would be skipped as already generated
   VSETS=${VERIFY_SETS:-"librispeech_test_other imda_part3_30s_asr_test aishell_asr_zh_test covost2_en_zh_test st_fleurs_th_en public_sg_speech_qa_test"}
   $RUN python -m torch.distributed.run --nproc_per_node 8 --master_port 29713 eval_omni.py generate \
       --suite $SUITE --tier $TIER --models $LAST --out_root $V --batch_size $BATCH \
-      --max_batch_audio_s ${MAX_BATCH_AUDIO_S:-480} --only $VSETS > $O/verify_switch.log 2>&1
-  $RUN python tests/compare_predictions.py $O/$(basename $LAST) $V/$(basename $LAST) | tee -a $O/verify_switch.log | tail -6
+      --max_batch_audio_s ${MAX_BATCH_AUDIO_S:-480} --only $VSETS > $L/verify_switch.log 2>&1
+  $RUN python tests/compare_predictions.py $O/$(basename $LAST) $V/$(basename $LAST) | tee -a $L/verify_switch.log | tail -6
 fi
 
 # 2. score: WER / CER (AudioBench-SEA normalisers) / BLEU, all models in parallel (CPU)
-for c in $CKPTS; do
-  $RUN python eval_omni.py score --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}" > $O/score.$c.log 2>&1 &
+for c in "${NAMES[@]}"; do
+  $RUN python eval_omni.py score --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}" > $L/score.$c.log 2>&1 &
 done
-wait; grep -h "Error\|Traceback" $O/score.*.log | sort | uniq -c | head
+wait; grep -h "Error\|Traceback" $L/score.*.log | sort | uniq -c | head
 
 # 3. judge: Llama-3-70B-Instruct AWQ on vLLM (as AudioBench's a2ap_scripts). The AWQ model (38 GB) fits one H100, so
 #    one server per GPU (TP=1; TP=4 crashed in custom all-reduce inside enroot, job 215310) and 8 scoring shards in
@@ -89,7 +111,7 @@ if [ "$JUDGE" = 1 ]; then
   for g in $(seq 0 $((NJ - 1))); do
     CUDA_VISIBLE_DEVICES=$g $RUN python -m vllm.entrypoints.openai.api_server --model $JUDGE_MODEL --quantization awq \
         --port $((PORT0 + g)) --tensor-parallel-size 1 --max-model-len 4096 --gpu-memory-utilization 0.9 \
-        > $O/judge_server.$g.log 2>&1 &
+        > $L/judge_server.$g.log 2>&1 &
   done
   UP=()
   for i in $(seq 180); do
@@ -102,21 +124,22 @@ if [ "$JUDGE" = 1 ]; then
   if [ ${#UP[@]} -gt 0 ]; then
     k=0
     for g in "${UP[@]}"; do
-      ( for c in $CKPTS; do
+      ( for c in "${NAMES[@]}"; do
           MY_VLLM_PORT_JUDGE=$((PORT0 + g)) $RUN python eval_omni.py score --judge --shard $k/${#UP[@]} \
               --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}"
-        done ) > $O/judge_shard.$k.log 2>&1 &
+        done ) > $L/judge_shard.$k.log 2>&1 &
       k=$((k + 1))
     done
     wait $(jobs -p | tail -n ${#UP[@]})
-    grep -h "Error\|Traceback" $O/judge_shard.*.log | sort | uniq -c | head
-    for c in $CKPTS; do $RUN python eval_omni.py score --judge --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}"; done
+    grep -h "Error\|Traceback" $L/judge_shard.*.log | sort | uniq -c | head
+    for c in "${NAMES[@]}"; do $RUN python eval_omni.py score --judge --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}"; done
   else
-    echo "no judge server started; see $O/judge_server.*.log"; tail -20 $O/judge_server.0.log
+    echo "no judge server started; see $L/judge_server.*.log"; tail -20 $L/judge_server.0.log
   fi
   pkill -u $USER -f vllm.entrypoints.openai.api_server; sleep 5   # this node only
 fi
 
-# 4. report over every model evaluated so far in this tier
-$RUN python eval_omni.py report $(ls -d $O/*/ | grep -v _verify) --out $O/report
+# 4. report over every model evaluated so far in this tier (dirs without scores.json are skipped; the last job to
+#    finish writes the complete one, or rerun this line by hand)
+$RUN python eval_omni.py report $(ls -d $O/*/ | grep -v '/_') --out $O/report
 echo "end $(date)"

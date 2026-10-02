@@ -1,0 +1,61 @@
+# MERaLiON-4 LoRA, stage 1 continued (DRAFT, 2026-10-02): starts from mv4_lora_v0 checkpoint-18500's LoRA weights
+# (`adapters:`; fresh optimizer, LR schedule and data order) with a new data_seed, so the subsampled datasets (`choose`)
+# draw samples v0 never saw. Why and what to decide first (eval curve, mix weights): docs/training_strategy_mv4.md.
+# Before launching: set `mix:` to the re-weighted mix once the v0 checkpoint evals are in (still mv4_v0 here).
+# Launch: qsub -v CONFIG=configs/mv4_lora_v1_cont.yaml,RUN_NAME=mv4_lora_v1_cont pbs/train_mv4_lora_v0.pbs
+# --- data
+mix: mixes/mv4_v0.yaml               # 4.74 M samples per epoch, 148 datasets
+val_choose: 32                       # x 67 validation sets = 2,144 samples per eval
+max_length: 2048                     # tokens; audio ~13 tokens/s, so a 30 s clip is ~390 tokens
+padding_free: true
+dataloader_num_workers: 6
+data_seed: 1042                      # v0: 42. New `choose` subsets: mosaic draws them with seed + epoch, so a
+                                     # nearby seed (43) would repeat what v0 would get in its 2nd epoch
+# prompts as in MERaLiON-3 (collator config of v4.14): English or the sample's language, Vietnamese format hints
+asr_prompt_type: random_multilingual
+ac_prompt_type: random_multilingual
+augment_prompt: true
+asr_normalize_text: false
+
+# --- model
+model: ${MODEL}
+model_type: qwen3_omni_moe
+experts_impl: grouped_mm
+torch_dtype: bfloat16
+attn_impl: flash_attn
+
+# --- LoRA: LLM attention in all 48 layers + audio projector (file) + audio encoder attention and MLP in all 32 layers.
+#     The MoE experts are fused tensors (grouped_mm), not nn.Linear, so they get no LoRA; the router is left alone.
+tuner_type: lora
+target_modules_file: lora_targets_thinker_attn_audio_proj.txt
+audio_lora_layers: all
+audio_lora_modules: attn_mlp
+lora_rank: 64                        # ignored with `adapters:` (the adapter's own config decides; train_omni.py warns
+lora_alpha: 64                       # on a mismatch); kept so the file matches what the adapter has
+lora_dropout: 0.05
+adapters: /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/runs/mv4_lora_v0/v0-20261002-015359/checkpoint-18500
+
+# --- optimisation: a trained adapter and a fresh AdamW state: short re-warmup to half v0's peak, cosine to v0's end LR
+learning_rate: 5.0e-5                # v0: 1e-4 peak, ended at 1e-5
+lr_scheduler_type: cosine_with_min_lr
+lr_scheduler_kwargs: {min_lr_rate: 0.2}  # cosine down to 1e-5
+warmup_steps: 300                    # passed on as warmup_ratio (fix_hf_warmup_steps); check omni_effective.json
+weight_decay: 0.1
+adam_beta2: 0.95
+max_grad_norm: 1.0
+seed: 43
+
+# --- batch: 1 x 4 x 64 GPUs (8 nodes) = 256 samples per step (MERaLiON-3: 288)
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 4
+gradient_checkpointing: true
+
+# --- schedule: half an epoch of the mix (2.37 M samples, ~7.5 h on 8 nodes)
+max_steps: 9250
+save_steps: 1000
+eval_steps: 1000
+save_total_limit: 20                 # adapters + optimizer state only, ~1-2 GB each
+save_only_model: false               # keep optimizer state for exact resume (LoRA parameters only)
+logging_steps: 10
+report_to: none                      # --wandb true (the PBS script) adds wandb
