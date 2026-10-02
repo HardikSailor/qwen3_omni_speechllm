@@ -7,7 +7,7 @@ this document is the plan for what comes after it. Items are proposals to discus
 
 ## 0. First: measure (needed before any stage 2 choice)
 
-There is no eval script yet (`PIPELINE_PLAN.md` phase 5). Without it the next stage cannot be steered.
+Eval: `eval_omni.py` + `pbs/eval_omni.pbs` (AudioBench-style suite, Llama-3-70B judge), added 2026-10-02; see `docs/EVAL.md`.
 - **Per-task, per-language scores** for the base model and every stage-1 checkpoint (every 1,000 steps): WER / MER for ASR
   (IMDA parts, SEAME, Malay, Tamil, Mandarin, id / th / vi), BLEU / chrF / COMET for ST (CoVoST2 6 directions), an LLM judge
   (rubric 1-5) for CPQA / CPSUMMARY / SQA, accuracy / macro-F1 for emotion (wangq2 PQA dev, MELD), and the public

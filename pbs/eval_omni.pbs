@@ -1,0 +1,122 @@
+#!/bin/bash
+#PBS -N eval_omni
+#PBS -l select=1:ngpus=8:ncpus=112:mem=1880GB
+#PBS -l walltime=12:00:00
+#PBS -q R212478
+#PBS -P 13003558_R4
+#PBS -j oe
+#PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/eval_omni.log
+#
+# Evaluate a training run's checkpoints (and the base model) on an eval suite, AudioBench style: eval_omni.py.
+# One node: generation runs 8 model copies (one per GPU), then the Llama-3-70B judge (vLLM, AWQ, as MERaLiON-3's
+# AudioBench runs) scores the speech QA / summary / emotion sets.
+#
+#   qsub -v RUN_DIR=<run>/v0-...,CKPTS="base checkpoint-5000 checkpoint-10000" pbs/eval_omni.pbs
+# Variables (qsub -v):
+#   RUN_DIR   dir holding checkpoint-* (default: the mv4_lora_v0 run)
+#   CKPTS     names under RUN_DIR, or "base" for the base model (default: "base" + every checkpoint-* not yet evaluated)
+#   NAME      output name: outputs/evals/<NAME>/<ckpt>/ (default: the run dir name above v0-*)
+#   SUITE     default evals/suite_v0.yaml;  TIER  smoke | quick | full (default quick);  ONLY  space-separated set names
+#   JUDGE     1 (default) = also the judge metrics;  CHECK=1 = only the CPU suite check (tests/check_eval_suite.py,
+#             which every job runs first anyway)
+#   VERIFY_SWITCH  1 (default): reload the last model fresh and compare 6 sets with its switched-in predictions
+#   BATCH     generation batch per GPU (default 8);  MAX_BATCH_AUDIO_S  audio seconds per batch (default 480)
+# Name a free healthy node if needed: qsub -l select=1:host=a2ap-dgx002:ngpus=8:ncpus=112:mem=1880GB ...
+set -u
+source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # P, C, MODEL, RUN
+# optional libraries of the AudioBench-SEA normalisers (num2words, malaya, pythainlp, NeMo TN, ...), eval only;
+# appended, so nothing in it can shadow the container's or pydeps' packages (container/install_pydeps_eval.sh)
+export PYTHONPATH=$PYTHONPATH:$C/pydeps_eval
+cd $P
+echo "job ${PBS_JOBID:-none} on $(hostname) start $(date)"
+[ -e /dev/infiniband/rdma_cm ] || { echo "no /dev/infiniband/rdma_cm on $(hostname): enroot cannot start here"; exit 3; }
+
+RUN_DIR=${RUN_DIR:-$(ls -d $P/outputs/runs/mv4_lora_v0/v0-* | tail -1)}
+NAME=${NAME:-$(basename $(dirname $RUN_DIR))}
+SUITE=${SUITE:-$P/evals/suite_v0.yaml}
+TIER=${TIER:-quick}
+JUDGE=${JUDGE:-1}
+BATCH=${BATCH:-8}
+O=$P/outputs/evals/$NAME/$TIER
+mkdir -p $O
+ONLY_ARGS=(); [ -n "${ONLY:-}" ] && ONLY_ARGS=(--only $ONLY)
+
+# 0. CPU check of the suite (every set loads; references score perfectly). Not fatal unless CHECK=1 (check only).
+$RUN python tests/check_eval_suite.py $SUITE > $O/check_suite.log 2>&1; echo "suite check exit=$? ($O/check_suite.log)"
+grep -E "^FAIL|failures" $O/check_suite.log
+[ "${CHECK:-0}" = 1 ] && exit
+
+if [ -z "${CKPTS:-}" ]; then
+  CKPTS=base
+  for d in $(ls -d $RUN_DIR/checkpoint-* | sort -t- -k2 -n); do CKPTS="$CKPTS $(basename $d)"; done
+fi
+echo "run dir: $RUN_DIR"; echo "models: $CKPTS"; echo "suite: $SUITE tier $TIER -> $O"
+
+# 1. generate: 8 processes (one model copy per GPU); the base model is loaded once (~8 min) and the checkpoints'
+#    LoRA adapters are switched in turn (seconds each)
+MODELS=(); for c in $CKPTS; do [ "$c" = base ] && MODELS+=(base) || MODELS+=($RUN_DIR/$c); done
+echo "=== generate $(date)"
+$RUN python -m torch.distributed.run --nproc_per_node 8 --master_port 29711 eval_omni.py generate \
+    --suite $SUITE --tier $TIER --models "${MODELS[@]}" --out_root $O --batch_size $BATCH \
+    --max_batch_audio_s ${MAX_BATCH_AUDIO_S:-480} "${ONLY_ARGS[@]}"
+echo "generate exit=$? $(date)"
+
+# 1b. switching check (VERIFY_SWITCH=1, default): the last model was switched in after the others; load it fresh in a
+#     new process, regenerate a few sets and compare. Any difference means the switched results are not trustworthy.
+if [ "${VERIFY_SWITCH:-1}" = 1 ] && [ ${#MODELS[@]} -gt 1 ]; then
+  LAST=${MODELS[-1]}; V=$O/_verify_fresh
+  VSETS=${VERIFY_SETS:-"librispeech_test_other imda_part3_30s_asr_test aishell_asr_zh_test covost2_en_zh_test st_fleurs_th_en public_sg_speech_qa_test"}
+  $RUN python -m torch.distributed.run --nproc_per_node 8 --master_port 29713 eval_omni.py generate \
+      --suite $SUITE --tier $TIER --models $LAST --out_root $V --batch_size $BATCH \
+      --max_batch_audio_s ${MAX_BATCH_AUDIO_S:-480} --only $VSETS > $O/verify_switch.log 2>&1
+  $RUN python tests/compare_predictions.py $O/$(basename $LAST) $V/$(basename $LAST) | tee -a $O/verify_switch.log | tail -6
+fi
+
+# 2. score: WER / CER (AudioBench-SEA normalisers) / BLEU, all models in parallel (CPU)
+for c in $CKPTS; do
+  $RUN python eval_omni.py score --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}" > $O/score.$c.log 2>&1 &
+done
+wait; grep -h "Error\|Traceback" $O/score.*.log | sort | uniq -c | head
+
+# 3. judge: Llama-3-70B-Instruct AWQ on vLLM (as AudioBench's a2ap_scripts). The AWQ model (38 GB) fits one H100, so
+#    one server per GPU (TP=1; TP=4 crashed in custom all-reduce inside enroot, job 215310) and 8 scoring shards in
+#    parallel, shard i -> server i. Then one unsharded pass (all cached) writes each scores.json.
+if [ "$JUDGE" = 1 ]; then
+  JUDGE_MODEL=$(ls -d /data/projects/13003558/hf_cache/hub/models--casperhansen--llama-3-70b-instruct-awq/snapshots/* | head -1)
+  export OMNI_JUDGE_TOKENIZER=$JUDGE_MODEL OMNI_JUDGE_PROCS=${JUDGE_PROCS:-32}
+  NJ=${NJ:-8}; PORT0=$((5000 + (${PBS_JOBID%%.*} % 100) * 10))
+  echo "=== judge: $NJ servers on ports $PORT0.. $(date)"
+  for g in $(seq 0 $((NJ - 1))); do
+    CUDA_VISIBLE_DEVICES=$g $RUN python -m vllm.entrypoints.openai.api_server --model $JUDGE_MODEL --quantization awq \
+        --port $((PORT0 + g)) --tensor-parallel-size 1 --max-model-len 4096 --gpu-memory-utilization 0.9 \
+        > $O/judge_server.$g.log 2>&1 &
+  done
+  UP=()
+  for i in $(seq 180); do
+    UP=(); for g in $(seq 0 $((NJ - 1))); do curl -sf localhost:$((PORT0 + g))/v1/models > /dev/null && UP+=($g); done
+    [ ${#UP[@]} = $NJ ] && break
+    [ $(jobs -r | wc -l) -lt $NJ ] && [ $i -gt 6 ] && break   # a server died; use the ones that came up
+    sleep 10
+  done
+  echo "judge servers up: ${#UP[@]} of $NJ (GPUs ${UP[*]}) $(date)"
+  if [ ${#UP[@]} -gt 0 ]; then
+    k=0
+    for g in "${UP[@]}"; do
+      ( for c in $CKPTS; do
+          MY_VLLM_PORT_JUDGE=$((PORT0 + g)) $RUN python eval_omni.py score --judge --shard $k/${#UP[@]} \
+              --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}"
+        done ) > $O/judge_shard.$k.log 2>&1 &
+      k=$((k + 1))
+    done
+    wait $(jobs -p | tail -n ${#UP[@]})
+    grep -h "Error\|Traceback" $O/judge_shard.*.log | sort | uniq -c | head
+    for c in $CKPTS; do $RUN python eval_omni.py score --judge --suite $SUITE --tier $TIER --out $O/$c "${ONLY_ARGS[@]}"; done
+  else
+    echo "no judge server started; see $O/judge_server.*.log"; tail -20 $O/judge_server.0.log
+  fi
+  pkill -u $USER -f vllm.entrypoints.openai.api_server; sleep 5   # this node only
+fi
+
+# 4. report over every model evaluated so far in this tier
+$RUN python eval_omni.py report $(ls -d $O/*/ | grep -v _verify) --out $O/report
+echo "end $(date)"

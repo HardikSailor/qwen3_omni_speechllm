@@ -42,7 +42,7 @@ The plan "vLLM + adapter per checkpoint" does not work. Options:
 | merge → vLLM → delete merged copy | ~66 GB disk and a few minutes per checkpoint; fast generation | final numbers on full test sets, best-checkpoint selection |
 | newer vLLM with Qwen3-Omni LoRA | unknown; would need a container rebuild | re-check later |
 
-Default: **transformers + PEFT for in-training eval, merge + vLLM for final eval.** Merged copies are temporary; delete them after scoring (disk policy, `PIPELINE_PLAN.md` §10.5). (The eval script doesn't exist yet.)
+Default: **transformers + PEFT for in-training eval, merge + vLLM for final eval.** Merged copies are temporary; delete them after scoring (disk policy, `PIPELINE_PLAN.md` §10.5). Eval script: `eval_omni.py` (transformers + PEFT only so far; `docs/EVAL.md`).
 
 ### 2.3 For the two-track plan (`FINETUNING_GUIDE.md` §3.3)
 

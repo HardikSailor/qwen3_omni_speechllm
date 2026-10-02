@@ -1,0 +1,53 @@
+#!/bin/bash
+#PBS -N eval_switch_test
+#PBS -l select=1:ngpus=8:ncpus=112:mem=1880GB
+#PBS -l walltime=03:00:00
+#PBS -q R212478
+#PBS -P 13003558_R4
+#PBS -j oe
+#PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/test_eval_switch.log
+# Test of eval_omni.py changes (2026-10-02): (1) suite check with the AudioBench-SEA normalisers + pydeps_eval;
+# (2) load-once adapter switching: smoke tier for base -> checkpoint-10000 -> checkpoint-12000 in one process, then
+# checkpoint-12000 alone (fresh PeftModel); predictions must match; (3) scoring with the new metrics;
+# (4) full-length long audio: ytb_asr_batch3_chinese, full tier (clips up to 33 min), base model.
+set -u
+source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh
+export PYTHONPATH=$PYTHONPATH:$C/pydeps_eval
+cd $P
+O=$P/outputs/evals/switch_test; mkdir -p $O
+R=$(ls -d $P/outputs/runs/mv4_lora_v0/v0-* | tail -1)
+G="$RUN python -m torch.distributed.run --nproc_per_node 8 --master_port 29712 eval_omni.py generate"
+echo "=== 1 suite check $(date)"
+$RUN python tests/check_eval_suite.py evals/suite_v0.yaml > $O/check_suite.log 2>&1; echo "exit=$?"
+grep -E "optional|^FAIL|failures" $O/check_suite.log
+echo "=== 2a switched $(date)"
+$G --tier smoke --models base $R/checkpoint-10000 $R/checkpoint-12000 --out_root $O/switched > $O/gen_switched.log 2>&1; echo "exit=$?"
+grep -E "loaded in|active|Error|Traceback" $O/gen_switched.log | sort | uniq -c | head
+echo "=== 2b fresh $(date)"
+$G --tier smoke --models $R/checkpoint-12000 --out_root $O/fresh > $O/gen_fresh.log 2>&1; echo "exit=$?"
+$RUN python - <<'PY'
+import json, glob, os
+A, B = '/scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/evals/switch_test/switched/checkpoint-12000', \
+       '/scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/evals/switch_test/fresh/checkpoint-12000'
+same = diff = 0
+for f in sorted(glob.glob(B + '/*.json')):
+    if f.endswith('meta.json'): continue
+    a = {r['idx']: r['model_prediction'] for r in json.load(open(os.path.join(A, os.path.basename(f))))}
+    for r in json.load(open(f)):
+        if a[r['idx']] == r['model_prediction']: same += 1
+        else:
+            diff += 1
+            if diff <= 5: print('DIFF', os.path.basename(f), r['idx'], repr(a[r['idx']][:80]), '|', repr(r['model_prediction'][:80]))
+print(f'switch vs fresh: {same} identical, {diff} different predictions')
+PY
+echo "=== 3 score $(date)"
+for c in base checkpoint-10000 checkpoint-12000; do
+  $RUN python eval_omni.py score --tier smoke --out $O/switched/$c > $O/score.$c.log 2>&1 &
+done; wait
+grep -h "Error\|Traceback" $O/score.*.log | sort | uniq -c | head
+$RUN python eval_omni.py report $O/switched/*/ --out $O/report_smoke | tail -12
+echo "=== 4 long audio $(date)"
+$G --tier full --only ytb_asr_batch3_chinese --models base --out_root $O/long > $O/gen_long.log 2>&1; echo "exit=$?"
+grep -E "ytb_asr_batch3_chinese|Error|OutOfMemory|Traceback" $O/gen_long.log | head -20
+$RUN python eval_omni.py score --tier full --only ytb_asr_batch3_chinese --out $O/long/base | tail -3
+echo "end $(date)"

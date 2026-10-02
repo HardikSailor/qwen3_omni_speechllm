@@ -1,0 +1,119 @@
+# Eval suite v0 for MERaLiON-4 stage 1 (mv4_lora_v0): ASR (must not regress), ST, speech QA / summary, emotion and
+# paralinguistics. Used by eval_omni.py; prompts, subsets and metrics: omni_eval/bench.py.
+#
+# processor: AudioBench's processor of the same name when third_party/audiobench/dataset_src/<name>.py exists (prompts
+# and scoring exactly as in the MERaLiON-3 AudioBench runs), else `generic` (the set's own instruction, or `prompt:`).
+# ASR: wer / cer use the team's AudioBench-SEA language normalisers (third_party/audiobench_sea), selected by `lang`
+# (en, sgen = Singlish, zh, ms, ta, id, th, vi, tl); CER is the main metric for zh / th (as there), Tamil gets both.
+# wer_ab = AudioBench's old WER (AudioBench sets only), for comparison with MERaLiON-3 numbers.
+# Metrics: wer, cer, wer_ab (fractions; the report shows %), bleu (0-100), llama3_70b_judge (0-5 scaled to 0-100),
+# llama3_70b_judge_binary (0/1 scaled to 0-100). AudioBench processors accept only `llama3_70b_judge` and pick the
+# 0-5 or the binary judge themselves (binary for MCQ, emotion, gender, accent), as in the MERaLiON-3 runs.
+# The AudioBench processors of seame_dev_* and ytb_asr_batch1/2 read a nested format the local copies don't have, so
+# those sets use the generic processor. ytb_asr_batch3_* are long recordings (median 34-44 s, Tamil p90 301 s, up to
+# 33 min): ASR and ST clips > 30 s are transcribed / translated in 30 s chunks joined in order (default `chunk_s` per
+# task, omni_eval/bench.py; as AudioBench-SEA's `simple` chunking); SQA / SDS / PQA always get the whole recording.
+# Some of their references cover only part of the recording (Tamil: 13 ~5-min recordings at 2-5 chars/s vs a median of
+# 18; Chinese: 3 nearly empty), which turns correct output into insertions: `min_ref_rate: 0.4` scores only samples whose
+# reference has >= 40% of the set's median characters per second (same samples for every model; dropped idx listed in
+# the score file).
+# Qwen3-Omni accepts up to ~40 min per request, but transcribing a whole recording stops early (job 215360: the 33-min
+# clip gave one sentence, 10-min clips about half), so the whole-recording run is a separate set (full tier only).
+# Output budget: max(max_new_tokens, 15 tokens per audio second). The judge metrics need the vLLM judge server (pbs/eval_omni.pbs).
+#
+# Overlap with mixes/mv4_v0.yaml (checked 2026-10-02): its train part uses train splits only. Its validation part
+# (eval loss only, no gradients) uses test splits of IMDA, SEAME, CoVoST2, GigaSpeech2, LibriSpeech, AIShell,
+# public_sg_speech_qa and cn_college, so those are not untouched for checkpoint *selection* by eval loss.
+# Not checked: whether wangq2's Emotional-YTB train videos overlap the SG YouTube human eval sets (*_ytb_eval_human).
+
+roots:
+  ab: /data/projects/13003558/zoux/datasets/audiobench        # AudioBench test sets (save_to_disk copies)
+  sea: /data/projects/13003558/sea_audiobench_datasets        # SEA-AudioBench (nested context/instruction/answer)
+
+# samples per set: AudioBench's shuffle(seed=42).select(n); a set can override with `quick:` / `full:`
+tiers:
+  smoke: 8        # end-to-end test of the pipeline
+  quick: 200      # checkpoint tracking: ~55 sets x 200 = ~11 k generations, minutes on one node
+  full: 2000      # final numbers (capped; -1 = the whole set)
+
+max_new_tokens: {ASR: 384, ST: 384, SQA: 512, SDS: 768, PQA: 256}   # minimum; ASR / ST: also 15 per audio second
+
+datasets:
+  # ---------------- ASR: English
+  - {name: librispeech_test_clean,  path: ab/librispeech_test_clean,  task: ASR, metric: [wer, wer_ab], lang: en}
+  - {name: librispeech_test_other,  path: ab/librispeech_test_other,  task: ASR, metric: [wer, wer_ab], lang: en}
+  - {name: common_voice_15_en_test, path: ab/common_voice_15_en_test, task: ASR, metric: [wer, wer_ab], lang: en}
+  - {name: gigaspeech_test,         path: ab/gigaspeech_test,         task: ASR, metric: [wer, wer_ab], lang: en}
+  - {name: tedlium3_test,           path: ab/tedlium3_test,           task: ASR, metric: [wer, wer_ab], lang: en}
+  # ---------------- ASR: Singapore (IMDA NSC, SEAME code-switch, YouTube SG)
+  - {name: imda_part1_asr_test,     path: ab/imda_part1_asr_test,     task: ASR, metric: [wer, wer_ab], lang: sgen}
+  - {name: imda_part2_asr_test,     path: ab/imda_part2_asr_test,     task: ASR, metric: [wer, wer_ab], lang: sgen}
+  - {name: imda_part3_30s_asr_test, path: ab/imda_part3_30s_asr_test, task: ASR, metric: [wer, wer_ab], lang: sgen}
+  - {name: imda_part4_30s_asr_test, path: ab/imda_part4_30s_asr_test, task: ASR, metric: [wer, wer_ab], lang: sgen}
+  - {name: imda_part5_30s_asr_test, path: ab/imda_part5_30s_asr_test, task: ASR, metric: [wer, wer_ab], lang: sgen}
+  - {name: imda_part6_30s_asr_test, path: ab/imda_part6_30s_asr_test, task: ASR, metric: [wer, wer_ab], lang: sgen}
+  - {name: seame_dev_man,           path: ab/seame_dev_man,           task: ASR, metric: cer, lang: zh, processor: generic}
+  - {name: seame_dev_sge,           path: ab/seame_dev_sge,           task: ASR, metric: wer, lang: sgen, processor: generic}
+  - {name: ytb_asr_batch1,          path: ab/ytb_asr_batch1,          task: ASR, metric: wer, lang: sgen, processor: generic, strip_speaker_tags: true}
+  - {name: ytb_asr_batch2,          path: ab/ytb_asr_batch2,          task: ASR, metric: wer, lang: sgen, processor: generic, strip_speaker_tags: true}
+  # ---------------- ASR: Chinese, Malay, Tamil, SEA languages
+  - {name: aishell_asr_zh_test,     path: ab/aishell_asr_zh_test,     task: ASR, metric: [cer, wer_ab], lang: zh}
+  - {name: ytb_asr_batch3_malay,    path: ab/ytb_asr_batch3_malay,    task: ASR, metric: wer, lang: ms, processor: generic, strip_speaker_tags: true, min_ref_rate: 0.4}
+  - {name: ytb_asr_batch3_tamil,    path: ab/ytb_asr_batch3_tamil,    task: ASR, metric: [wer, cer], lang: ta, processor: generic, strip_speaker_tags: true, min_ref_rate: 0.4}
+  # the same Chinese set as one request per recording (no chunking): Qwen3-Omni's native long-audio ASR; full tier only
+  - {name: ytb_asr_batch3_chinese_whole, path: ab/ytb_asr_batch3_chinese, task: ASR, metric: cer, lang: zh, processor: generic, strip_speaker_tags: true, chunk_s: null, min_ref_rate: 0.4, quick: {n: 0}}
+  - {name: ytb_asr_batch3_chinese,  path: ab/ytb_asr_batch3_chinese,  task: ASR, metric: cer, lang: zh, processor: generic, strip_speaker_tags: true, min_ref_rate: 0.4}
+  - {name: gigaspeech2_id_test,     path: ab/gigaspeech2_id_test,     task: ASR, metric: wer, lang: id}
+  - {name: gigaspeech2_th_test,     path: ab/gigaspeech2_th_test,     task: ASR, metric: cer, lang: th}
+  - {name: gigaspeech2_vi_test,     path: ab/gigaspeech2_vi_test,     task: ASR, metric: wer, lang: vi}
+  - {name: asr_fleurs_id,           path: sea/ASR/test/asr_fleurs_id_30, task: ASR, metric: wer, lang: id}
+  - {name: asr_fleurs_ms,           path: sea/ASR/test/asr_fleurs_ms_30, task: ASR, metric: wer, lang: ms}
+  - {name: asr_fleurs_th,           path: sea/ASR/test/asr_fleurs_th_30, task: ASR, metric: cer, lang: th}
+  - {name: asr_fleurs_vi,           path: sea/ASR/test/asr_fleurs_vi_30, task: ASR, metric: wer, lang: vi}
+  - {name: asr_fleurs_tl,           path: sea/ASR/test/asr_fleurs_tl_30, task: ASR, metric: wer, lang: tl}
+  - {name: asr_fleurs_zh,           path: sea/ASR/test/asr_fleurs_zh_30, task: ASR, metric: cer, lang: zh}
+  - {name: asr_cv21_ta,             path: sea/ASR/test/asr_cv21_ta_30,   task: ASR, metric: [wer, cer], lang: ta}
+  # ---------------- ST
+  - {name: covost2_en_id_test,      path: ab/covost2_en_id_test,      task: ST, metric: bleu}
+  - {name: covost2_en_zh_test,      path: ab/covost2_en_zh_test,      task: ST, metric: bleu}
+  - {name: covost2_en_ta_test,      path: ab/covost2_en_ta_test,      task: ST, metric: bleu}
+  - {name: covost2_id_en_test,      path: ab/covost2_id_en_test,      task: ST, metric: bleu}
+  - {name: covost2_zh_en_test,      path: ab/covost2_zh_en_test,      task: ST, metric: bleu}
+  - {name: covost2_ta_en_test,      path: ab/covost2_ta_en_test,      task: ST, metric: bleu}
+  - {name: ytb_st_en_ms,            path: ab/ytb_batch1_st_en_ms,     task: ST, metric: bleu, lang: ms, strip_speaker_tags: true, prompt: "Please translate the speech into Malay."}
+  - {name: ytb_st_en_ta,            path: ab/ytb_batch1_st_en_ta,     task: ST, metric: bleu, lang: ta, strip_speaker_tags: true, prompt: "Please translate the speech into Tamil."}
+  - {name: ytb_st_en_zh,            path: ab/ytb_batch1_st_en_zh,     task: ST, metric: bleu, lang: zh, strip_speaker_tags: true, prompt: "Please translate the speech into Chinese."}
+  - {name: st_fleurs_id_en,         path: sea/ST/test/translation_fleurs_id_30, task: ST, metric: bleu}
+  - {name: st_fleurs_ms_en,         path: sea/ST/test/translation_fleurs_ms_30, task: ST, metric: bleu}
+  - {name: st_fleurs_th_en,         path: sea/ST/test/translation_fleurs_th_30, task: ST, metric: bleu}
+  - {name: st_fleurs_vi_en,         path: sea/ST/test/translation_fleurs_vi_30, task: ST, metric: bleu}
+  - {name: st_fleurs_tl_en,         path: sea/ST/test/translation_fleurs_tl_30, task: ST, metric: bleu}
+  - {name: st_fleurs_zh_en,         path: sea/ST/test/translation_fleurs_zh_30, task: ST, metric: bleu}
+  # ---------------- speech QA (judge)
+  - {name: imda_part3_30s_sqa_human_test, path: ab/imda_part3_30s_sqa_human_test, task: SQA, metric: llama3_70b_judge}
+  - {name: imda_part4_30s_sqa_human_test, path: ab/imda_part4_30s_sqa_human_test, task: SQA, metric: llama3_70b_judge}
+  - {name: imda_part5_30s_sqa_human_test, path: ab/imda_part5_30s_sqa_human_test, task: SQA, metric: llama3_70b_judge}
+  - {name: imda_part6_30s_sqa_human_test, path: ab/imda_part6_30s_sqa_human_test, task: SQA, metric: llama3_70b_judge}
+  - {name: public_sg_speech_qa_test,      path: ab/public_sg_speech_qa_test,      task: SQA, metric: llama3_70b_judge}
+  - {name: slue_p2_sqa5_test,             path: ab/slue_p2_sqa5_test,             task: SQA, metric: llama3_70b_judge}
+  - {name: cn_college_listen_mcq_test,    path: ab/cn_college_listen_mcq_test,    task: SQA, metric: llama3_70b_judge}
+  - {name: dream_tts_mcq_test,            path: ab/dream_tts_mcq_test,            task: SQA, metric: llama3_70b_judge}
+  - {name: sqa_ytb_eval_human,            path: sea/SQA/test/sqa_ytb_eval_human_30, task: SQA, metric: llama3_70b_judge}
+  - {name: cpqa_ytb_eval_human,           path: sea/PQA/test/cpqa_ytb_eval_human_30, task: SQA, metric: llama3_70b_judge}
+  # ---------------- dialogue summary (judge)
+  - {name: imda_part3_30s_ds_human_test,  path: ab/imda_part3_30s_ds_human_test,  task: SDS, metric: llama3_70b_judge}
+  - {name: imda_part4_30s_ds_human_test,  path: ab/imda_part4_30s_ds_human_test,  task: SDS, metric: llama3_70b_judge}
+  - {name: imda_part5_30s_ds_human_test,  path: ab/imda_part5_30s_ds_human_test,  task: SDS, metric: llama3_70b_judge}
+  - {name: imda_part6_30s_ds_human_test,  path: ab/imda_part6_30s_ds_human_test,  task: SDS, metric: llama3_70b_judge}
+  # ---------------- emotion, gender, accent (judge)
+  - {name: meld_emotion_test,       path: ab/meld_emotion_test,       task: PQA, metric: llama3_70b_judge}
+  - {name: meld_sentiment_test,     path: ab/meld_sentiment_test,     task: PQA, metric: llama3_70b_judge}
+  - {name: iemocap_emotion_test,    path: ab/iemocap_emotion_test,    task: PQA, metric: llama3_70b_judge}
+  - {name: er_ytb_eval_human,       path: sea/PQA/test/er_ytb_eval_human_30, task: PQA, metric: llama3_70b_judge}
+  - {name: er_esd_en,               path: sea/PQA/test/er_esd_en_30,  task: PQA, metric: llama3_70b_judge_binary}
+  - {name: er_esd_zh,               path: sea/PQA/test/er_esd_zh_30,  task: PQA, metric: llama3_70b_judge_binary}
+  - {name: er_m3ed,                 path: sea/PQA/test/er_m3ed_30,    task: PQA, metric: llama3_70b_judge_binary}
+  - {name: iemocap_gender_test,     path: ab/iemocap_gender_test,     task: PQA, metric: llama3_70b_judge}
+  - {name: imda_gr_sentence,        path: ab/imda_gr_sentence,        task: PQA, metric: llama3_70b_judge}
+  - {name: imda_ar_sentence,        path: ab/imda_ar_sentence,        task: PQA, metric: llama3_70b_judge}
+  - {name: voxceleb_accent_test,    path: ab/voxceleb_accent_test,    task: PQA, metric: llama3_70b_judge}

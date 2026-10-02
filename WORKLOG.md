@@ -361,3 +361,92 @@ Next: the eval script (phase 5), then evaluate stage-1 checkpoints against the b
   10 s per eval); train loss 1.44 (step 1) -> 0.62 (step 1,050); LR at peak 1e-4 after the 500-step warmup. checkpoint-1000 =
   1.2 GB (LoRA adapter + optimizer state + omni_mosaic_state at 256,000 samples + omni_wandb.json). ETA for 18,500 steps ~14 h
   (around 16:00 on 2026-10-02). Resume if needed: `qsub -l select=<8 named hosts> -v RESUME=<checkpoint> pbs/train_mv4_lora_v0.pbs`.
+
+## 2026-10-02: eval script (phase 5): `eval_omni.py`, AudioBench style
+
+Details and usage: `docs/EVAL.md`. MERaLiON-3 was benchmarked with AudioBench (`/data/projects/13003558/AudioBench`, a2ap
+scripts: per-dataset processors + Llama-3-70B-Instruct AWQ judge on vLLM); we reuse exactly that so numbers compare.
+- **New:** `eval_omni.py` (`generate` / `score [--judge] [--shard i/N]` / `report`), `omni_eval/` (suite loading, generic
+  processor, metrics, run-time shims for jiwer 4 / offline `evaluate`), `evals/suite_v0.yaml` (69 sets: ASR 29, ST 15,
+  SQA 10, SDS 4, PQA 11; tiers smoke 8 / quick 200 / full 2000 samples per set), `third_party/audiobench/` (vendored
+  AudioBench `dataset_src`, 2 documented patches: judge tokenizer path + process count from env), `pbs/eval_omni.pbs`,
+  `tests/check_eval_suite.py`. Launchers forward `MY_VLLM_PORT_JUDGE`, `OMNI_JUDGE_TOKENIZER`, `OMNI_JUDGE_PROCS`.
+- Generation: ms-swift `TransformersEngine` + PEFT adapter (vLLM 0.17.1 cannot load Qwen3-Omni adapters), training
+  template, greedy, 8 model copies per node (one per GPU), batch 8. Judge: 8 vLLM servers TP=1 (one per GPU, the AWQ
+  model is 38 GB) and 8 scoring shards in parallel.
+- **Data findings:** AudioBench processors of `seame_dev_*` / `ytb_asr_batch1/2` / `ytb_asr_batch3_*` expect a nested format
+  the local copies (`zoux/datasets/audiobench`) don't have -> generic processor. `ytb_asr_batch3_*` are long-form (median
+  34-44 s, Tamil p90 301 s, Chinese max 1,966 s; one 6,502-char reference dominated the Chinese WER) -> only clips <= 60 s.
+  The MERaLiON/Whisper ASR normaliser turns spacing vowel signs (Unicode Mc: Tamil, Burmese, Khmer) into spaces, so Tamil
+  WER was computed on word fragments -> Unicode-safe normaliser for such references + CER for Tamil sets. Full-width
+  bracket annotations `（额）` are now removed like ASCII ones.
+- Mix overlap: train uses train splits only; the validation part (eval loss) uses test splits of IMDA, SEAME, CoVoST2,
+  GigaSpeech2, LibriSpeech, AIShell, public_sg_speech_qa, cn_college.
+
+| job | what | result |
+|---|---|---|
+| 215310 | smoke (8 samples/set), base + checkpoint-10000, dgx002 | suite check 69/69 OK; base model load 8 min (8 copies from /scratch), 69 sets in 5.5 min; WER/BLEU OK. **Judge failed:** one vLLM server TP=4 crashed in CUDA-graph capture (`custom_all_reduce.cuh:455 'invalid argument'`, probably CUDA IPC inside enroot) -> TP=1 per GPU |
+| 215328 | same, judge only (predictions cached) | 8 judge servers up in ~4 min (weights from /data/projects), judge ~30-50 s per set; parse success 100% except one set at 87.5% (AudioBench scores unparsable as 0) |
+| 215332 | quick tier, base + checkpoint-1000 ... 12000 (13 models), dgx002 | base done (69 sets, then moved to `quick_old_215332`); every later model failed at once: I changed the `generate` CLI (load-once, below) while the job ran |
+
+Next: read the quick report (`outputs/evals/mv4_lora_v0/quick/report.md`); evaluate later checkpoints and the final one on
+`full`; possible speed-ups: load the base model once per job and switch adapters; copy the judge to node-local disk.
+
+### 2026-10-02 (afternoon): load-once adapter switching, team normalisers, full-length long audio (user request)
+- **Load once, switch adapters:** `eval_omni.py generate --models base <ckpt> <ckpt> ... --out_root <dir>` loads the base
+  model once per job (~7 min, 8 copies) and switches checkpoints in seconds (was ~7 min each). ms-swift's own
+  multi-adapter path passes `adapter_names=[name]` to PEFT's mixed-batch LoRA (expects one name per sample; would also hit
+  the audio-encoder LoRA), so not used.
+  - First version: PEFT `load_adapter` / `set_adapter` / `delete_adapter` on the wrapped model. **Wrong:** job 215360,
+    checkpoint-12000 switched in after checkpoint-10000 vs loaded fresh: 169 / 552 smoke predictions differ (one output
+    `<NONE>`). The first adapter on a plain base was exact: checkpoint-10000 after base vs the earlier smoke run (ms-swift
+    loader, other batches) 526 / 528 identical, the 2 others differ only by the larger token budget (prefix).
+  - Fix: every switch = `unload()` (original Linear modules back, base weights untouched) + fresh
+    `PeftModel.from_pretrained`, i.e. a fresh load. Every eval job re-checks it (`VERIFY_SWITCH`: last model reloaded in a
+    new process, 6 sets compared, `tests/compare_predictions.py`).
+- **Batching:** clips dealt to ranks longest first; batches <= 8 clips and <= 480 s audio (`--max_batch_audio_s`); output
+  budget max(per-task minimum, 15 tokens / audio s) for ASR / ST, cap 16 K; PQA minimum 128 -> 256 (base model gave
+  long accent explanations: 6 / 8 hit 128); `finish_reason` kept per prediction, the log counts max-token hits.
+- **ASR normalisers = the team's new AudioBench-SEA** (`AudioBench-Temp` git f25d990) vendored as
+  `third_party/audiobench_sea` (normaliser + WER / CER; patches in its VENDORED.md): every ASR set has a `lang` (their
+  codes: en, sgen for IMDA / YouTube SG / SEAME-en, zh, ms, ta, id, th, vi, tl); CER main metric for zh / th, Tamil both;
+  AudioBench sets also keep the old AudioBench WER as `wer_ab`. Replaces my interim Unicode-safe normaliser.
+  - Their metric silently falls back to an approximate positional WER when `from jiwer import compute_measures` fails
+    (jiwer 4): fixed by our shim; `bench.py` refuses non-jiwer results. (Tagalog smoke: 58% fallback vs 18.9% real.)
+  - Optional libraries (number words, segmentation): `container/install_pydeps_eval.sh` -> `$C/pydeps_eval` (num2words,
+    cn2an, pythainlp + attacut, indic-nlp + indic-numtowords, malaya, NeMo TN + pynini; --no-deps, appended to PYTHONPATH
+    in eval jobs only). In the container all import (job 215360); spaCy not installed (only used with AB_USE_SPACY=1).
+    Without malaya their Malay normaliser fails outright. Each score file lists the libraries found (`normalizer_libs`).
+    **Open:** which of these the team's own runs have; numbers match theirs only with the same set.
+- **Long audio:** Qwen3-Omni accepts up to ~40 min of audio per request (tech report; 64 K context, ~13 audio tokens/s);
+  ms-swift disables the Whisper extractor's 30 s truncation. Job 215360, base model, `ytb_asr_batch3_chinese` whole (206
+  recordings up to 33 min): fits (no OOM, 2.5 min on 8 GPUs), **but transcription stops early** (EOS, not the token cap):
+  the 33-min recording gave one 49-char sentence (reference 9,287), 10-min ones about half; CER 29.1%. So long recordings
+  are now transcribed in 30 s chunks joined in order (`chunk_s: 30`, AudioBench-SEA's `simple` chunking), full length, all
+  tiers; `ytb_asr_batch3_chinese_whole` (full tier) keeps one request per recording to track native long-audio ASR.
+- Job 215360 also: suite check in the container 69 / 69 with all optional normaliser libraries importable (spaCy not);
+  smoke scores with the new normalisers agree with the old AudioBench WER on English / IMDA (e.g. IMDA part 3 15.40 vs
+  15.57).
+- **215384** (dgx002): quick tier, base + checkpoint-2000, 4000, ..., 14000 (8 models, one load), judge, report, switch
+  check. Odd checkpoints and the final one later (second node once training ends).
+- **Chunking (user agreed: for long speech without reasoning, ASR / ST):** default per task now: ASR and ST clips > 30 s
+  are cut into 30 s chunks (tail < 1 s merged), batched like clips, joined in order; SQA / SDS / PQA always whole.
+  Job 215384, base model: the 33-min Chinese recording now 8,875 chars vs reference 9,287 (whole-file: 49); base CER
+  `ytb_asr_batch3_chinese` 21.4% chunked vs 29.1% whole-file.
+- **Incomplete references** in `ytb_asr_batch3_*`: Tamil 13 recordings of ~5 min have references at 2-5 chars/s (set
+  median 18; the model outputs 13-17) and Chinese 3 (nearly) empty ones; correct output then counts as insertions.
+  `min_ref_rate: 0.4` scores only samples with >= 40% of the set median chars/s (reference-only rule, same samples for
+  every model, dropped idx in the score file). Base CER: Tamil 72.6% -> 61.9% (187 / 200), Chinese 21.4% -> 20.3%
+  (197 / 200). Remaining Tamil gap is mostly style: references keep English words in Latin script, base writes them in
+  Tamil script.
+- 215384 ended at 16:32 after 2 h 44 min with exit 143 (SIGTERM from outside; the user had asked to free the eval node
+  for a teammate's urgent work, and my qdel arrived after it had ended). Saved: base, checkpoint-2000 / 4000 / 6000 all
+  69 sets generated; checkpoint-8000 17 sets (+ per-rank partial files); no scoring / judge yet. ~35 min per model after
+  the one 7-min load. Resume later with the same qsub (finished sets are skipped; name a free healthy node, not dgx011):
+  ```
+  qsub -l select=1:host=<free node>:ngpus=8:ncpus=112:mem=1880GB -l walltime=16:00:00 \
+       -v TIER=quick,CKPTS="base checkpoint-2000 checkpoint-4000 checkpoint-6000 checkpoint-8000 checkpoint-10000 checkpoint-12000 checkpoint-14000" \
+       pbs/eval_omni.pbs
+  ```
+  Output `outputs/evals/mv4_lora_v0/quick/` (`report.md`, `verify_switch.log`). The odd checkpoints and the final one
+  can go to a second node with the same command and their own `CKPTS`.
