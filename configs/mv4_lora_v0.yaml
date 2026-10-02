@@ -1,0 +1,61 @@
+# MERaLiON-4 first LoRA run, stage 1 (2026-10-02): ASR + ST + emotion + speech QA on mixes/mv4_v0.yaml, HF trainer (DDP).
+# Goal (user): improve ST, speech QA and emotion while keeping ASR (a little ASR loss is acceptable). Reasoning and the
+# MERaLiON-3 reference recipe: docs/mix_mv4_v0.md. Launch: pbs/train_mv4_lora_v0.pbs (8 nodes x 8 H100).
+#   $RUN python train_omni.py sft --config configs/mv4_lora_v0.yaml --output_dir <run dir>
+# Only the LoRA adapters (+ their optimizer state, for resume) are saved; the base model is never written (no merge).
+
+# --- data
+mix: mixes/mv4_v0.yaml               # 4.74 M samples per epoch, 148 datasets
+val_choose: 32                       # x 67 validation sets = 2,144 samples per eval
+max_length: 2048                     # tokens; audio ~13 tokens/s, so a 30 s clip is ~390 tokens
+padding_free: true
+dataloader_num_workers: 6
+data_seed: 42
+# prompts as in MERaLiON-3 (collator config of v4.14): English or the sample's language, Vietnamese format hints
+asr_prompt_type: random_multilingual
+ac_prompt_type: random_multilingual
+augment_prompt: true
+asr_normalize_text: false
+
+# --- model
+model: ${MODEL}
+model_type: qwen3_omni_moe
+experts_impl: grouped_mm
+torch_dtype: bfloat16
+attn_impl: flash_attn
+
+# --- LoRA: LLM attention in all 48 layers + audio projector (file) + audio encoder attention and MLP in all 32 layers.
+#     The MoE experts are fused tensors (grouped_mm), not nn.Linear, so they get no LoRA; the router is left alone.
+tuner_type: lora
+target_modules_file: lora_targets_thinker_attn_audio_proj.txt
+audio_lora_layers: all
+audio_lora_modules: attn_mlp
+lora_rank: 64                        # MERaLiON-3: rank 64, alpha 64
+lora_alpha: 64
+lora_dropout: 0.05
+
+# --- optimisation: new adapters start at zero (lora_B = 0), so warm up
+learning_rate: 1.0e-4
+lr_scheduler_type: cosine_with_min_lr
+lr_scheduler_kwargs: {min_lr_rate: 0.1}  # cosine down to 1e-5
+warmup_steps: 500                    # train_omni.py passes it on as warmup_ratio 0.027 (ms-swift + transformers 5.2
+                                     # drop warmup_steps, fix_hf_warmup_steps); check omni_effective.json
+weight_decay: 0.1
+adam_beta2: 0.95
+max_grad_norm: 1.0
+seed: 42
+
+# --- batch: 1 x 4 x 64 GPUs (8 nodes) = 256 samples per step (MERaLiON-3: 288)
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 4
+gradient_checkpointing: true
+
+# --- schedule: one epoch of the mix = 4,738,932 / 256 = 18,511 steps
+max_steps: 18500
+save_steps: 1000
+eval_steps: 1000
+save_total_limit: 20                 # adapters + optimizer state only, ~1-2 GB each
+save_only_model: false               # keep optimizer state for exact resume (LoRA parameters only)
+logging_steps: 10
+report_to: none                      # --wandb true (the PBS script) adds wandb

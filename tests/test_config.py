@@ -106,6 +106,15 @@ SCRIPT_OVERRIDES = [
 ]
 
 
+def test_warmup_steps_become_a_ratio():
+    """ms-swift + transformers 5.2 drop --warmup_steps (job 215264); train_omni passes the same warmup as a ratio."""
+    import math
+    from train_omni import fix_hf_warmup_steps
+    out = fix_hf_warmup_steps('sft', ['--warmup_steps', '500', '--max_steps', '18500'])
+    assert '--warmup_steps' not in out and math.ceil(18500 * float(out[out.index('--warmup_ratio') + 1])) == 500
+    assert fix_hf_warmup_steps('megatron', ['--warmup_steps', '5']) == ['--warmup_steps', '5']
+
+
 def test_pbs_scripts_differ_from_recipes_only_as_intended():
     for script, name, cfg, extra in SCRIPT_OVERRIDES:
         got = flags(expand_config(script_array(script, name)))

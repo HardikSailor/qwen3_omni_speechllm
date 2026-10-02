@@ -378,6 +378,23 @@ Conventions:
   options, the mix and `omni_effective` in the config. Not exercised live: a restart continuing the same run id.
 - **Bug B24:** the HF recipe has `report_to: none`; `none` + `wandb` is refused by transformers (job 215045). `setup_wandb` drops `none`.
 
+### D28. MERaLiON-4 stage 1: multi-task LoRA on 8 nodes (2026-10-02, user brief)
+- **Goal (user):** improve ST, spoken QA (CPQA), summarisation, emotion and cultural understanding / reasoning; keep ASR
+  (Singapore languages incl. Singlish, SEA languages; very little public English). Several stages allowed.
+- **Mix** `mixes/mv4_v0.yaml` from `tools/make_mix_mv4_v0.py` (source: MERaLiON-3 v4.9 + wangq2 Emotional-YTB sets):
+  4.74 M samples per epoch, ASR 36% / ST 24% / QA + summary + emotion 40%. **Recipe** `configs/mv4_lora_v0.yaml`: HF DDP,
+  LoRA r64 / alpha 64 on LLM attention (48 layers) + audio encoder attention + MLP (32 layers) + projector; LR 1e-4, 500 warmup,
+  cosine to 1e-5; batch 256; 18,500 steps. Reasoning and the MERaLiON-3 comparison: `docs/mix_mv4_v0.md`.
+- **HF DDP, not Megatron:** faster per step on 4 nodes (0.91 vs 1.64 s at batch 32) and audio-encoder LoRA is tested there;
+  62-63 GiB per GPU fits. MoE experts get no LoRA (fused tensors).
+- **Run files kept with the results:** `train_omni.py` copies config, mix, PBS script and command into `<run>/omni_run/`.
+- **Bugs found:** B25 warmup_steps silently 0 in swift sft (ms-swift + transformers 5.2) -> converted to warmup_ratio;
+  B26 mosaic shared memory left by a killed job ("Reused local directory") -> per-node cleanup phase before training;
+  B27 `--clean_stale_shm` on all local ranks at once broke the first collective -> not used in multi-rank jobs.
+- **Node a2ap-dgx011** lacks `/dev/infiniband/rdma_cm` (enroot mellanox hook fails; jobs 215246, 215261): excluded; the PBS
+  script checks the device on every node first. To be reported to NSCC (WORKLOG 2026-10-02).
+- Next stages: `docs/MERALION4_ROADMAP.md`.
+
 ---
 
 ## 4. Problems found and fixed

@@ -114,6 +114,7 @@ def expand_config(argv):
     else:
         path, argv = argv[i].split('=', 1)[1], argv[:i] + argv[i + 1:]
     import yaml
+    _RUN_FILES['config'] = os.path.abspath(path)
     with open(path, encoding='utf-8') as f:
         cfg = yaml.safe_load(f) or {}
     if not isinstance(cfg, dict):
@@ -148,6 +149,42 @@ def expand_config(argv):
     print(f'[train_omni] config {path}: {len(cfg)} settings'
           + (f'; replaced on the command line: {" ".join(replaced)}' if replaced else ''), flush=True)
     return out + argv
+
+
+_RUN_FILES = {}   # files that define the run (--config, --mix), copied into <output_dir>/omni_run by save_run_files
+
+
+def save_run_files(omni, swift_argv, raw_argv):
+    """Rank 0 keeps what defined the run next to its results: <output_dir>/omni_run/ holds the --config YAML, the mix YAML,
+    the command line as given and as passed to ms-swift, and $OMNI_RUN_EXTRA_FILES (e.g. the PBS script). A resumed run
+    adds a new numbered folder instead of overwriting (omni_run, omni_run.1, ...)."""
+    import shutil
+    import time
+    if os.environ.get('RANK', '0') != '0':
+        return
+    out = argv_value(swift_argv, '--output_dir')
+    if not out:
+        return
+    d = os.path.join(out, 'omni_run')
+    k = 0
+    while os.path.exists(d):
+        k += 1
+        d = os.path.join(out, f'omni_run.{k}')
+    os.makedirs(d)
+    files = dict(_RUN_FILES, mix=os.path.abspath(omni.mix))
+    for extra in filter(None, os.environ.get('OMNI_RUN_EXTRA_FILES', '').split(',')):
+        files[os.path.basename(extra)] = os.path.abspath(extra)
+    for key, src in files.items():
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(d, os.path.basename(src) if key not in ('config', 'mix') else
+                                           f'{key}__{os.path.basename(src)}'))
+    with open(os.path.join(d, 'command.json'), 'w') as f:
+        json.dump({'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'cwd': os.getcwd(), 'argv': raw_argv,
+                   'files': files, 'omni': vars(omni), 'swift_argv': swift_argv,
+                   'env': {k: v for k, v in os.environ.items()
+                           if k.startswith(('OMNI_', 'NNODES', 'NODE_RANK', 'NPROC', 'WORLD_SIZE', 'MASTER_', 'PBS_', 'WANDB_'))
+                           and 'KEY' not in k}}, f, indent=1)
+    print(f'[train_omni] run files -> {d}', flush=True)
 
 
 def _bool(v):
@@ -758,6 +795,39 @@ def check_megatron_resume_args(swift_argv):
                  'Either drop --no_save_optim true or pass --no_load_optim true.')
 
 
+def fix_hf_warmup_steps(mode, swift_argv):
+    """swift sft: `--warmup_steps N` is silently dropped. ms-swift (8ec0455) declares `warmup_ratio: float = 0.` and
+    transformers 5.2's TrainingArguments.__post_init__ does `if self.warmup_ratio is not None: self.warmup_steps =
+    self.warmup_ratio`, so warmup_steps becomes 0 (found 2026-10-02, job 215264: LR 1e-4 at step 1). Pass the same warmup
+    as a ratio of --max_steps instead (transformers turns a ratio < 1 back into ceil(max_steps * ratio) steps)."""
+    steps, max_steps = argv_value(swift_argv, '--warmup_steps'), argv_value(swift_argv, '--max_steps')
+    if mode != 'sft' or steps is None or float(steps) < 1:
+        return swift_argv
+    if argv_value(swift_argv, '--warmup_ratio') not in (None, '0', '0.0'):
+        sys.exit('train_omni.py: give --warmup_steps or --warmup_ratio, not both')
+    if not max_steps or int(max_steps) <= 0:
+        sys.exit('train_omni.py: --warmup_steps needs --max_steps (it is passed on as --warmup_ratio, see fix_hf_warmup_steps)')
+    ratio = float(steps) / int(max_steps)
+    if ratio >= 1:
+        sys.exit(f'train_omni.py: --warmup_steps {steps} >= --max_steps {max_steps}')
+    out, skip = [], False
+    for i, x in enumerate(swift_argv):
+        if skip:
+            skip = False
+            continue
+        if x == '--warmup_steps':
+            skip = True
+            continue
+        if x.startswith('--warmup_steps=') or x == '--warmup_ratio' or x.startswith('--warmup_ratio='):
+            skip = x == '--warmup_ratio'
+            continue
+        out.append(x)
+    ratio = (int(float(steps)) - 0.5) / int(max_steps)   # ceil(max_steps * ratio) == steps
+    print(f'[train_omni] --warmup_steps {steps} -> --warmup_ratio {ratio:.6g} (ms-swift / transformers drop warmup_steps)',
+          flush=True)
+    return out + ['--warmup_ratio', f'{ratio:.9g}']
+
+
 def safe_save_defaults(mode, swift_argv):
     """Disk guards, added unless the flag is given explicitly (an explicit flag always wins):
       - megatron: --merge_lora false. Megatron-SWIFT's default (true) writes a full merged model (66 GB) next to
@@ -875,6 +945,7 @@ def main(argv=None):
     if not argv or argv[0] not in ('sft', 'megatron'):
         sys.exit(__doc__)
     mode, rest = argv[0], argv[1:]
+    raw_argv = list(argv)
     if mode == 'megatron':
         os.environ.setdefault('CUDA_DEVICE_MAX_CONNECTIONS', '1')   # as `megatron sft` does
     maybe_relaunch_with_torchrun(argv)
@@ -893,6 +964,7 @@ def main(argv=None):
             x == name and y == value for x, y in zip(swift_argv, swift_argv[1:]))
 
     eval_off = arg_is('--eval_strategy', 'no') or arg_is('--eval_iters', '0')
+    swift_argv = fix_hf_warmup_steps(mode, swift_argv)
     swift_argv += safe_save_defaults(mode, swift_argv)
     swift_argv = add_audio_lora_targets(omni, swift_argv)
     if mode == 'megatron':
@@ -904,6 +976,7 @@ def main(argv=None):
     swift_argv += ['--dataset', TRAIN_PLACEHOLDER, '--split_dataset_ratio', '0']
     if has_val and not eval_off:
         swift_argv += ['--val_dataset', VAL_PLACEHOLDER]
+    save_run_files(omni, swift_argv, raw_argv)
     apply_gpu_mem_cap()
     if mode == 'sft':
         make_sft_cls(omni)(swift_argv).main()

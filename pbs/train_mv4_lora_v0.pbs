@@ -1,0 +1,72 @@
+#!/bin/bash
+#PBS -N mv4_lora_v0
+#PBS -l select=8:ngpus=8:ncpus=112:mem=1880GB
+# (no place=: the R212478 reservation is place=free; whole-node chunks land on separate nodes anyway)
+#PBS -l walltime=48:00:00
+#PBS -q R212478
+#PBS -P 13003558_R4
+#PBS -j oe
+#PBS -o /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/outputs/pbs_logs/train_mv4_lora_v0.log
+#
+# MERaLiON-4 first LoRA run, stage 1: configs/mv4_lora_v0.yaml on mixes/mv4_v0.yaml (ASR + ST + emotion + speech QA),
+# HF trainer (DDP), 8 nodes x 8 H100 = 64 GPUs, global batch 256, 18,500 steps (one epoch), W&B i2r-llm/meralion_v4.
+# Plan and reasoning: docs/mix_mv4_v0.md.
+# Submit:  qsub pbs/train_mv4_lora_v0.pbs
+# Smoke:   qsub -v SMOKE=1 -l walltime=01:00:00 pbs/train_mv4_lora_v0.pbs   (outputs/runs/mv4_lora_v0_smoke)
+# Resume:  qsub -v RESUME=<run dir>/v0-.../checkpoint-<N> pbs/train_mv4_lora_v0.pbs   (same output dir: same W&B run)
+# Nodes:   qsub -l select=<K>:ngpus=8:ncpus=112:mem=1880GB -v ACCUM=<256 / (8 K)> ...   (keeps the global batch at 256)
+# The run dir gets omni_run/ (this script, the config, the mix, the full command; train_omni.py save_run_files).
+set -u
+source /scratch/users/astar/ares/sailorhb/git_repos/qwen3_omni_speechllm/nscc/env.sh   # P, C, MODEL, RUN, ...
+NAME=mv4_lora_v0
+[ "${SMOKE:-0}" = 1 ] && NAME=${NAME}_smoke   # SMOKE=1: 20 steps, eval + save at 10, separate dir and W&B group
+O=$P/outputs/runs/$NAME
+mkdir -p $O; cd $P
+NODES=$O/nodes.$(echo ${PBS_JOBID:-dry} | cut -d. -f1).txt
+awk '{sub(/\..*/,"")} !s[$0]++' "${PBS_NODEFILE:?not inside a PBS job}" > $NODES
+NN=$(wc -l < $NODES)
+echo "job ${PBS_JOBID:-none} start $(date)"; echo "nodes ($NN): $(tr '\n' ' ' < $NODES)"
+GPUS=8
+LAUNCH=(pbsdsh --)
+[ "${DRY_RUN:-0}" = 1 ] && LAUNCH=(bash -c 'for n in $(cat '$NODES'); do NODE_RUN_HOST=$n "$@"; done' _)
+
+# run_phase <name> <port> <command>: the command goes through a file (pbsdsh re-parses its arguments, D26)
+run_phase () {
+  local name=$1 port=$2 cmd=$3
+  echo "=== $name $(date)"
+  printf '%s\n' "$cmd" > $O/$name.cmd.sh
+  "${LAUNCH[@]}" env DRY_RUN=${DRY_RUN:-0} bash $P/nscc/node_run.sh $NODES $O/$name $port $GPUS -- bash $O/$name.cmd.sh
+  echo "$name exit=$?"
+}
+
+# pre-flight: every node must have the InfiniBand devices enroot's Mellanox hook mounts (a2ap-dgx011 lacked rdma_cm on
+# 2026-10-02 and its container never started, so the other nodes waited at the rendezvous). Fail fast and name the node.
+if [ "${DRY_RUN:-0}" != 1 ]; then
+  rm -f $O/ib.*   # each node writes a file (pbsdsh task output goes to the job log; commands go through a file, D26)
+  printf '%s\n' 'h=$(cat /proc/sys/kernel/hostname); h=${h%%.*}' \
+    '[ -e /dev/infiniband/rdma_cm ] && s=ok || s=MISSING; echo $s > "$1/ib.$h"' > $O/ib_check.sh
+  pbsdsh -- bash $O/ib_check.sh $O
+  BAD=$(for n in $(cat $NODES); do [ "$(cat $O/ib.$n 2>/dev/null)" = ok ] || echo $n; done)
+  if [ -n "$BAD" ]; then echo "pre-flight FAILED (no /dev/infiniband/rdma_cm or no answer): $BAD"; exit 3; fi
+  echo "pre-flight: InfiniBand devices present on all $NN nodes"
+fi
+
+run_phase nccl 29600 '$RUN python -m torch.distributed.run --nnodes $NNODES --node_rank $NODE_RANK --nproc_per_node $NPROC_PER_NODE --master_addr $MASTER_ADDR --master_port $MASTER_PORT '$P'/nscc/nccl_check.py'
+grep -h nccl_check $O/nccl.log 2>/dev/null
+
+# A killed job leaves mosaic shared memory on its nodes, and the next job then fails with "Reused local directory"
+# (job 215266). Clean it once per node, in one process, before training (all 8 local ranks doing it at once inside
+# train_omni.py --clean_stale_shm broke the first collective, job 215268). Safe here: the job has the nodes to itself.
+run_phase shmclean 29599 '$RUN python -c "from streaming.base.util import clean_stale_shared_memory as c; c(); print(\"mosaic shm cleaned\")"'
+grep -h "shm cleaned" $O/shmclean*.log | sort | uniq -c
+
+ACCUM=${ACCUM:-$((256 / (8 * NN)))}       # global batch 256 = 1 x ACCUM x 8 x NN
+# num_canonical_nodes fixed at 8 (the planned node count): the data order then stays the same if a resume uses 1, 2 or 4 nodes
+ARGS=(--config $P/configs/mv4_lora_v0.yaml --gradient_accumulation_steps $ACCUM --num_canonical_nodes 8
+      --wandb true --wandb_group $NAME --output_dir $O)
+[ "${SMOKE:-0}" = 1 ] && ARGS+=(--max_steps 20 --warmup_steps 5 --save_steps 10 --eval_steps 10 --val_choose 4 --logging_steps 1)
+[ -n "${RESUME:-}" ] && ARGS+=(--resume_from_checkpoint $RESUME)
+q () { printf '%q ' "$@"; }
+PHASE=train_$(echo ${PBS_JOBID:-dry} | cut -d. -f1)
+run_phase $PHASE 29601 "OMNI_RUN_EXTRA_FILES=$P/pbs/train_mv4_lora_v0.pbs \$RUN python train_omni.py sft $(q "${ARGS[@]}")"
+echo "end $(date)"
